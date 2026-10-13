@@ -359,3 +359,93 @@ class MemberDialog(QDialog):
         if self.current_shape() is None:
             return
         self.update_requested.emit(self.params())
+
+
+from PySide6.QtWidgets import QFileDialog, QHeaderView, QTableWidget, QTableWidgetItem  # noqa: E402
+
+from ._bom import to_csv  # noqa: E402
+
+ROW_HEADERS = ["Mark", "Shape", "Family", "Length", "Weight", "Layer", "IFC"]
+SUMMARY_HEADERS = ["Shape", "Family", "Count", "Total length", "Total weight"]
+
+
+class BomDialog(QDialog):
+    def __init__(self, parent, fetch_bom, select_uid, fmt_len, fmt_weight):
+        super().__init__(parent)
+        self.setWindowTitle("Steel Bill of Materials")
+        self.setModal(False)
+        self.resize(760, 520)
+        self._fetch = fetch_bom
+        self._select = select_uid
+        self._fmt_len = fmt_len
+        self._fmt_weight = fmt_weight
+        self._bom = None
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Members"))
+        self.rows_table = self._table(ROW_HEADERS)
+        self.rows_table.cellDoubleClicked.connect(self._on_row_activated)
+        layout.addWidget(self.rows_table, 3)
+        layout.addWidget(QLabel("Summary by shape"))
+        self.summary_table = self._table(SUMMARY_HEADERS)
+        layout.addWidget(self.summary_table, 2)
+        self.totals_label = QLabel("")
+        layout.addWidget(self.totals_label)
+        buttons = QHBoxLayout()
+        refresh = QPushButton("Refresh")
+        export = QPushButton("Export CSV…")
+        close = QPushButton("Close")
+        refresh.clicked.connect(self.refresh)
+        export.clicked.connect(lambda _c=False: self.export_csv())
+        close.clicked.connect(self.close)
+        buttons.addStretch(1)
+        for b in (refresh, export, close):
+            buttons.addWidget(b)
+        layout.addLayout(buttons)
+
+    @staticmethod
+    def _table(headers):
+        t = QTableWidget(0, len(headers))
+        t.setHorizontalHeaderLabels(headers)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
+        t.setSelectionBehavior(QTableWidget.SelectRows)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        t.verticalHeader().setVisible(False)
+        return t
+
+    @staticmethod
+    def _fill(table, rows):
+        table.setRowCount(len(rows))
+        for r, values in enumerate(rows):
+            for c, value in enumerate(values):
+                table.setItem(r, c, QTableWidgetItem(str(value)))
+
+    def refresh(self):
+        self._bom = self._fetch()
+        bom = self._bom
+        self._fill(self.rows_table, [
+            (r.mark, r.label, r.family,
+             "profile" if r.is_profile else self._fmt_len(r.length_m),
+             self._fmt_weight(r.weight_kg), r.layer, r.ifc_class) for r in bom.rows])
+        self._fill(self.summary_table, [
+            (s.label, s.family, s.count, self._fmt_len(s.total_length_m),
+             self._fmt_weight(s.total_weight_kg)) for s in bom.summary])
+        self.totals_label.setText(
+            f"{bom.count} members  •  {self._fmt_len(bom.total_length_m)}  •  "
+            f"{self._fmt_weight(bom.total_weight_kg)}")
+
+    def _on_row_activated(self, row, _column=0):
+        if self._bom is None or row < 0 or row >= len(self._bom.rows):
+            return
+        self._select(self._bom.rows[row].uid)
+
+    def export_csv(self, path=None):
+        if self._bom is None:
+            self.refresh()
+        if path is None:
+            path, _f = QFileDialog.getSaveFileName(self, "Export Bill of Materials", "steel_bom.csv",
+                                                   "CSV files (*.csv)")
+            if not path:
+                return None
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(to_csv(self._bom, self._fmt_len, self._fmt_weight))
+        return path
