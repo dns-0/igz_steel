@@ -7,8 +7,9 @@ them in place, tags them for BIM, assigns layers and produces a Bill of
 Materials.
 
 - **Version:** 1.0.0 — **License:** GPL-3.0-or-later (see LICENSE, THIRD-PARTY.md)
-- **Tested with:** IngeTrazo 0.5.8 (Extension API 2). The API is still 0.x; a
-  newer IngeTrazo may need an update of this extension.
+- **Tested with:** IngeTrazo 0.5.8 (Extension API 2, bundled Python 3.12 and
+  PySide6 6.x). The API is still 0.x; a newer IngeTrazo may need an update of
+  this extension.
 - **Dependencies:** none beyond IngeTrazo itself.
 
 ## Installation
@@ -34,7 +35,8 @@ folder there (or unzip `igz_steel.zip` so that the folder is
    click the new end or type the new total length. A click past the fixed end
    grows the member the other way.
 4. **Edit member…** — select a member and change its shape, insertion point,
-   roll, fillets, layer or length. The start point and axis stay put.
+   roll, fillets, layer or length. The member stays where it is, even after
+   you moved or rotated it with IngeTrazo's own tools.
 5. **Bill of Materials…** — every member with mark, shape, length, weight,
    layer and IFC class, a summary by shape and totals; **Export CSV…** writes
    the table. Double-click a row to select that member. Lengths and weights

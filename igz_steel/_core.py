@@ -14,8 +14,8 @@ from . import KEY
 from ._bom import collect
 from ._db import load as load_db
 from ._geometry import MIN_LENGTH
-from ._host import (insert_command, is_steel_group, iter_groups, make_group, member_params,
-                    member_parts, member_record, new_params, rebuild_command, run)
+from ._host import (insert_command, is_steel_group, iter_groups, make_group, member_frame,
+                    member_params, member_parts, member_record, new_params, rebuild_command, run)
 from ._tools import PlaceMemberTool, StretchMemberTool
 from ._units import fmt_len, fmt_weight
 
@@ -23,6 +23,12 @@ log = logging.getLogger("ingetrazo.plugins.igz_steel")
 _ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 _SESSIONS = {}
 TOOLBAR_NAME = "igz_steel_toolbar"
+
+
+def _deferred(fn):
+    """A slot that runs ``fn`` on the next event-loop turn and ignores the
+    ``checked`` bool Qt may pass to a triggered handler."""
+    return lambda _checked=False, f=fn: QTimer.singleShot(0, f)
 
 
 def load_icon(name, window):
@@ -103,10 +109,12 @@ class SteelSession:
         if g is None:
             return
         params = member_params(g)
+        _start, _direction, length, roll = member_frame(g)
+        params["roll"] = roll
         from core.layers import layer_of
         d = self.member_dialog()
         d.set_mode("edit")
-        d.load(params, layer_of(g), float(params.get("length", 0.0)))
+        d.load(params, layer_of(g), length)
         self._edit_target = g
         self._show(d)
 
@@ -122,6 +130,7 @@ class SteelSession:
             return
         from core.layers import layer_of
         layer = layer_of(g)
+        params["roll"] = member_frame(g)[3]
 
         def on_commit(fixed, direction, length):
             return self.rebuild(g, params, fixed, direction, length, layer)
@@ -169,8 +178,7 @@ class SteelSession:
         if length < MIN_LENGTH:
             length = 0.0
         layer = (p.get("layer") or "").strip() or None
-        start = tuple(old.get("start", (0.0, 0.0, 0.0)))
-        direction = tuple(old.get("direction", (1.0, 0.0, 0.0)))
+        start, direction, _length, _roll = member_frame(g)
         if self.rebuild(g, params, start, direction, length, layer) and self.dialog is not None:
             self.dialog.close()
 
@@ -244,9 +252,9 @@ class SteelSession:
             return
         menu.addSeparator()
         edit = menu.addAction("Edit steel member…")
-        edit.triggered.connect(lambda _c=False: QTimer.singleShot(0, self.open_edit))
+        edit.triggered.connect(_deferred(self.open_edit))
         stretch = menu.addAction("Stretch steel member")
-        stretch.triggered.connect(lambda _c=False: QTimer.singleShot(0, self.open_stretch))
+        stretch.triggered.connect(_deferred(self.open_stretch))
 
     def outliner_kind(self, group):
         if not is_steel_group(group):
@@ -297,7 +305,7 @@ def _install_toolbar(app, session):
         act = QAction(load_icon(icon, win), text, win)
         act.setToolTip(text)
         act.setStatusTip(text)
-        act.triggered.connect(lambda _c=False, f=fn: QTimer.singleShot(0, f))
+        act.triggered.connect(_deferred(fn))
         tb.addAction(act)
         refs.append(act)
     tb._igz_steel_refs = refs
@@ -319,7 +327,7 @@ def setup(app):
                          ("Stretch member", session.open_stretch),
                          ("Edit member…", session.open_edit),
                          ("Bill of Materials…", session.open_bom)):
-            menu.addAction(text, lambda f=fn: QTimer.singleShot(0, f))
+            menu.addAction(text, _deferred(fn))
         if toolbar is not None:
             menu.addSeparator()
             toggle = toolbar.toggleViewAction()

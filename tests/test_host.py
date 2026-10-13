@@ -136,3 +136,25 @@ def test_profile_cache_and_insertion_fallback():
     assert p1 is p2
     assert _host.insertion_uv(p1, "does-not-exist") == (0.0, 0.0)
     assert _host.insertion_uv(p1, "top")[1] > 0
+
+
+def test_member_frame_follows_a_moved_and_rotated_xform():
+    from PySide6.QtGui import QMatrix4x4
+    shape = _w12()
+    params = _host.new_params("W12X26", "imperial", "centroid", 0.0, True, 24)
+    g = _host.make_group(_host.member_parts(shape, params, (0, 0, 0), (1, 0, 0), 3.0))
+    start, direction, length, roll = _host.member_frame(g)
+    assert start == pytest.approx((0, 0, 0)) and direction == pytest.approx((1, 0, 0))
+    assert length == pytest.approx(3.0) and roll == pytest.approx(0.0)
+    moved = QMatrix4x4()
+    moved.translate(0.0, 10.0, 0.0)
+    g.xform = moved * g.xform                      # what the host's Move tool does
+    rot = QMatrix4x4()
+    rot.rotate(30.0, 1.0, 0.0, 0.0)
+    g.xform = g.xform * rot                        # a Rotate about the member's own axis
+    start, direction, length, roll = _host.member_frame(g)
+    assert start == pytest.approx((0, 10, 0)) and direction == pytest.approx((1, 0, 0))
+    assert roll == pytest.approx(30.0, abs=1e-6)
+    profile = _host.make_group(_host.member_parts(shape, params, (1, 1, 1), (1, 0, 0), 0.0))
+    start, direction, length, roll = _host.member_frame(profile)
+    assert start == pytest.approx((1, 1, 1)) and length == 0.0 and direction == (1.0, 0.0, 0.0)

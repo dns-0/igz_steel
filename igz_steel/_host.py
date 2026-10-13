@@ -8,8 +8,8 @@ import logging
 from PySide6.QtGui import QMatrix4x4, QVector3D
 
 from . import EXT_VERSION, KEY
-from ._geometry import (MIN_LENGTH, apply_matrix, extrude, ifc_class_for, member_matrix,
-                        unit)
+from ._geometry import (MIN_LENGTH, apply_matrix, cross, direction_and_length, dot, extrude,
+                        ifc_class_for, member_matrix, unit)
 from ._profiles import build_profile
 
 log = logging.getLogger("ingetrazo.plugins.igz_steel")
@@ -199,6 +199,29 @@ def member_endpoints(group):
     a = m.map(QVector3D(0.0, 0.0, 0.0))
     b = m.map(QVector3D(length, 0.0, 0.0))
     return ((a.x(), a.y(), a.z()), (b.x(), b.y(), b.z()))
+
+
+def member_frame(group):
+    """``(start, direction, length, roll_deg)`` measured from the LIVE ``xform``,
+    so a member the host's Move or Rotate tools touched keeps its place and
+    its roll when it is stretched or edited. A profile object (length 0)
+    keeps its stored direction and roll."""
+    import math
+    params = member_params(group) or {}
+    p0, p1 = member_endpoints(group)
+    direction, length = direction_and_length(p0, p1)
+    if direction is None or length < MIN_LENGTH:
+        return (p0, tuple(float(c) for c in params.get("direction", (1.0, 0.0, 0.0))),
+                0.0, float(params.get("roll", 0.0)))
+    m = group.xform
+    origin = m.map(QVector3D(0.0, 0.0, 0.0))
+    zc = m.map(QVector3D(0.0, 0.0, 1.0)) - origin
+    zc = unit((zc.x(), zc.y(), zc.z()))
+    ref = member_matrix(p0, direction, 0.0)
+    y0 = (ref[1], ref[5], ref[9])
+    z0 = (ref[2], ref[6], ref[10])
+    roll = math.degrees(math.atan2(-dot(zc, y0), dot(zc, z0)))
+    return (p0, direction, length, roll)
 
 
 def member_record(group, db):

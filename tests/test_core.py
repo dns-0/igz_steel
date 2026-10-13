@@ -171,3 +171,42 @@ def test_load_icon_has_pixmap(qapp):
     from PySide6.QtWidgets import QWidget
     icon = _core.load_icon("tb_place", QWidget())
     assert not icon.isNull()
+
+
+def test_edit_and_stretch_keep_a_member_where_the_host_moved_it(app):
+    from PySide6.QtGui import QMatrix4x4, QVector3D
+    s = app.session
+    s.on_place({"label": "W12X26", "unit_system": "imperial", "insertion": "centroid",
+                "roll": 0.0, "fillets": True, "segments": 24, "layer": "", "length": 0.0})
+    app.viewport.tool.on_member((0, 0, 0), (1, 0, 0), 3.0)
+    g = app.scene.groups[-1]
+    moved = QMatrix4x4()
+    moved.translate(0.0, 10.0, 0.0)
+    g.xform = moved * g.xform                      # Move tool
+    rot = QMatrix4x4()
+    rot.rotate(30.0, 1.0, 0.0, 0.0)
+    g.xform = g.xform * rot                        # Rotate about the axis
+    app.scene.selection = {g}
+    s.open_edit()
+    assert s.dialog.roll_spin.value() == pytest.approx(30.0, abs=1e-6)
+    s.on_update({"label": "W12X26", "unit_system": "imperial", "insertion": "centroid",
+                 "roll": 30.0, "fillets": True, "segments": 24, "layer": "", "length": 5.0})
+    assert _host.member_endpoints(g) == (pytest.approx((0, 10, 0)), pytest.approx((5, 10, 0)))
+    app.scene.selection = {g}
+    s.open_stretch()
+    assert app.viewport.tool.on_commit((0, 10, 0), (1, 0, 0), 2.0) is True
+    up = g.xform.map(QVector3D(0, 0, 1)) - g.xform.map(QVector3D(0, 0, 0))
+    assert (up.y(), up.z()) == pytest.approx((-0.5, 0.8660254), abs=1e-6)   # roll kept
+
+
+def test_menu_entries_survive_a_checked_argument(app, qapp):
+    hits = []
+    fn = _core._deferred(lambda: hits.append(1))
+    fn(True)                                        # a triggered(bool) delivered to the slot
+    fn()
+    qapp.processEvents()
+    assert hits == [1, 1]
+    for a in app.menus[0].actions():
+        if not a.isSeparator() and a.text() != "Show steel toolbar":
+            a.trigger()
+    qapp.processEvents()
