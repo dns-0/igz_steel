@@ -29,6 +29,8 @@ def test_bom_dialog_fills_tables_and_exports(qapp, tmp_path):
     text = out.read_text(encoding="utf-8")
     assert text.startswith("mark,label,family,length,weight") and "TOTAL" in text
     d.close()
+    d.deleteLater()
+    qapp.processEvents()
 
 
 def test_bom_dialog_empty(qapp):
@@ -37,3 +39,5 @@ def test_bom_dialog_empty(qapp):
     d.refresh()
     assert d.rows_table.rowCount() == 0 and "0 members" in d.totals_label.text()
     d.close()
+    d.deleteLater()
+    qapp.processEvents()

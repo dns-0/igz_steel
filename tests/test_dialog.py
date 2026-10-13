@@ -11,6 +11,8 @@ def dialog(qapp):
     d.set_layers(["Layer 0", "Steel"])
     yield d
     d.close()
+    d.deleteLater()
+    qapp.processEvents()
 
 
 def test_filter_selects_and_reads_out(dialog):
