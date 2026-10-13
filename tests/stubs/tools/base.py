@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QVector3D
@@ -10,7 +10,7 @@ from PySide6.QtGui import QVector3D
 class ToolContext:
     viewport: object
     world: QVector3D
-    screen: QPointF = QPointF(0, 0)
+    screen: QPointF = field(default_factory=lambda: QPointF(0, 0))
     modifiers: object = Qt.KeyboardModifier.NoModifier
     snap: object = None
 
