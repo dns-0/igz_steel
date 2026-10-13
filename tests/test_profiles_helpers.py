@@ -32,8 +32,8 @@ def test_round_corners_rounds_a_convex_corner():
     for p in loop.points[1:6]:
         assert math.hypot(p[0] - centre[0], p[1] - centre[1]) == pytest.approx(0.5)
     assert loop.arc_edges == {1, 2, 3, 4}
-    # area lost by rounding one corner: r^2 (1 - pi/4)
-    assert signed_area(loop.points) == pytest.approx(4.0 - 0.25 * (1 - math.pi / 4))
+    # area lost by rounding one corner: r^2 (1 - pi/4); a 4-segment arc loses ~0.13 % more
+    assert signed_area(loop.points) == pytest.approx(4.0 - 0.25 * (1 - math.pi / 4), rel=2e-3)
 
 
 def test_round_corners_rounds_a_concave_corner_and_keeps_winding():
@@ -42,7 +42,7 @@ def test_round_corners_rounds_a_concave_corner_and_keeps_winding():
     loop = round_corners(corners, segs=4)
     assert signed_area(loop.points) > 0
     # a concave fillet ADDS material: r^2 (1 - pi/4)
-    assert signed_area(loop.points) == pytest.approx(3.0 + 0.0625 * (1 - math.pi / 4))
+    assert signed_area(loop.points) == pytest.approx(3.0 + 0.0625 * (1 - math.pi / 4), rel=2e-3)
     assert loop.arc_edges == {3, 4, 5, 6}
 
 
