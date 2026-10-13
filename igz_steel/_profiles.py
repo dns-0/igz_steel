@@ -140,3 +140,143 @@ def circle_loop(r, segments):
     pts = [(r * math.cos(2.0 * math.pi * k / segments),
             r * math.sin(2.0 * math.pi * k / segments)) for k in range(segments)]
     return Loop(pts, set(range(segments)))
+
+
+# ---------------------------------------------------------------- builders
+# Each builder returns [(outer_corners, [hole_corners, ...]), ...] with
+# corners as (u, v, r). Any origin: the assembly recentres on the centroid.
+
+#: Families rolled with a 1:6 slope on the inner flange faces. Their
+#: tabulated ``tf`` is the AVERAGE thickness, so the flange is thicker at the
+#: web by half the slope across the flange and the fillet is smaller than
+#: ``kdes - tf`` by that amount.
+SLOPED_FLANGES = {"S", "C", "MC", "ST"}
+FLANGE_SLOPE = 1.0 / 6.0
+
+
+def _fillet_radius(dims, key_thickness, fillets):
+    if not fillets:
+        return 0.0
+    k = dims.get("kdes")
+    t = dims.get(key_thickness)
+    if k is None or t is None:
+        return 0.0
+    r = k - t
+    if dims.get("_sloped"):
+        bf, tw = dims.get("bf", 0.0), dims.get("tw", 0.0)
+        r -= 0.5 * FLANGE_SLOPE * max(0.0, bf - tw)
+    return max(0.0, r)
+
+
+def _i_shape(dims, fillets):
+    d, bf, tw, tf = dims["d"], dims["bf"], dims["tw"], dims["tf"]
+    r = _fillet_radius(dims, "tf", fillets)
+    hb, hd, hw = bf / 2.0, d / 2.0, tw / 2.0
+    outer = [(-hb, -hd, 0), (hb, -hd, 0), (hb, -hd + tf, 0), (hw, -hd + tf, r),
+             (hw, hd - tf, r), (hb, hd - tf, 0), (hb, hd, 0), (-hb, hd, 0),
+             (-hb, hd - tf, 0), (-hw, hd - tf, r), (-hw, -hd + tf, r), (-hb, -hd + tf, 0)]
+    return [(outer, [])]
+
+
+def _channel(dims, fillets):
+    d, bf, tw, tf = dims["d"], dims["bf"], dims["tw"], dims["tf"]
+    r = _fillet_radius(dims, "tf", fillets)
+    outer = [(0, 0, 0), (bf, 0, 0), (bf, tf, 0), (tw, tf, r),
+             (tw, d - tf, r), (bf, d - tf, 0), (bf, d, 0), (0, d, 0)]
+    return [(outer, [])]
+
+
+def _tee(dims, fillets):
+    d, bf, tw, tf = dims["d"], dims["bf"], dims["tw"], dims["tf"]
+    r = _fillet_radius(dims, "tf", fillets)
+    hb, hw = bf / 2.0, tw / 2.0
+    outer = [(-hw, 0, 0), (hw, 0, 0), (hw, d - tf, r), (hb, d - tf, 0),
+             (hb, d, 0), (-hb, d, 0), (-hb, d - tf, 0), (-hw, d - tf, r)]
+    return [(outer, [])]
+
+
+_BUILDERS = {
+    "W": _i_shape, "M": _i_shape, "S": _i_shape, "HP": _i_shape,
+    "C": _channel, "MC": _channel,
+    "WT": _tee, "MT": _tee, "ST": _tee,
+}
+
+NAMED = [("top", "Top centre"), ("bottom", "Bottom centre"),
+         ("left", "Left centre"), ("right", "Right centre"),
+         ("top_left", "Top left"), ("top_right", "Top right"),
+         ("bottom_left", "Bottom left"), ("bottom_right", "Bottom right")]
+
+
+def _close(a, b, eps=1e-9):
+    return abs(a[0] - b[0]) <= eps and abs(a[1] - b[1]) <= eps
+
+
+def _assemble(raw_regions, segs=ARC_SEGMENTS):
+    """Round the corners, build the loops, centre on the centroid and derive
+    the insertion points from the SHARP corners (so ids never depend on the
+    fillet setting)."""
+    regions = []
+    sharp_all = []
+    area = 0.0
+    cx = cy = 0.0
+    for outer_corners, hole_corner_lists in raw_regions:
+        outer = round_corners(outer_corners, segs)
+        a = signed_area(outer.points)
+        c = polygon_centroid(outer.points)
+        area += a
+        cx += a * c[0]
+        cy += a * c[1]
+        holes = []
+        for hc in hole_corner_lists:
+            h = round_corners(hc, segs)
+            ha = signed_area(h.points)
+            hcen = polygon_centroid(h.points)
+            area -= ha
+            cx -= ha * hcen[0]
+            cy -= ha * hcen[1]
+            holes.append(reverse_loop(h))
+        regions.append(Region(outer, holes))
+        sharp_all.append([(u, v) for (u, v, _r) in outer_corners])
+    cx, cy = (cx / area, cy / area) if area > 0 else (0.0, 0.0)
+
+    def shift(p):
+        return (p[0] - cx, p[1] - cy)
+
+    for reg in regions:
+        reg.outer.points = [shift(p) for p in reg.outer.points]
+        for h in reg.holes:
+            h.points = [shift(p) for p in h.points]
+    us = [p[0] for reg in regions for p in reg.outer.points]
+    vs = [p[1] for reg in regions for p in reg.outer.points]
+    bbox = (min(us), min(vs), max(us), max(vs))
+    umin, vmin, umax, vmax = bbox
+    named_uv = {"top": (0.0, vmax), "bottom": (0.0, vmin), "left": (umin, 0.0),
+                "right": (umax, 0.0), "top_left": (umin, vmax), "top_right": (umax, vmax),
+                "bottom_left": (umin, vmin), "bottom_right": (umax, vmin)}
+    points = [InsertionPoint("centroid", "Centroid", (0.0, 0.0))]
+    points += [InsertionPoint(i, label, named_uv[i]) for i, label in NAMED]
+    k = 0
+    vertices = []
+    midpoints = []
+    for sharp in sharp_all:
+        n = len(sharp)
+        for i in range(n):
+            a = shift(sharp[i])
+            b = shift(sharp[(i + 1) % n])
+            vertices.append((f"v{k}", a))
+            midpoints.append((f"m{k}", ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)))
+            k += 1
+    for ident, uv in vertices + midpoints:
+        if any(_close(uv, p.uv) for p in points):
+            continue
+        points.append(InsertionPoint(ident, ident, uv))
+    return Profile(regions, points, (0.0, 0.0), area, bbox)
+
+
+def build_profile(family, dims, fillets=True, segments=DEFAULT_ROUND_SEGMENTS):
+    builder = _BUILDERS.get(family)
+    if builder is None:
+        raise ValueError(f"unknown shape family {family!r}")
+    dims = dict(dims)
+    dims["_sloped"] = family in SLOPED_FLANGES
+    return _assemble(builder(dims, fillets))
