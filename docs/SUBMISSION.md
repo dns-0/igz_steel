@@ -6,29 +6,16 @@ IngeTrazo's creator (Ingelibre) runs a community catalog at
 catalog is a directory, not a store: your code stays in your own repository and
 the catalog holds one TOML entry pointing at a fixed release file.
 
-## 1. Publish the code in your own GitHub repository
+## 1. The code is published (done)
 
-1. Create an empty public repository on GitHub named `igz_steel` (any host
-   works; GitHub keeps the update path automatic later).
-2. From this folder, push the branch and the tag:
+The repository is <https://github.com/dns-0/igz_steel> (branch `main`, tag
+`v1.0.0`) and the release <https://github.com/dns-0/igz_steel/releases/tag/v1.0.0>
+carries `igz_steel.zip` as its asset. The catalog entry in
+`catalog/igz_steel.toml` names that asset and its SHA-256.
 
-```bash
-git remote add origin https://github.com/dns-0/igz_steel.git
-git push -u origin feature/igz-steel
-git push origin v1.0.0
-```
-
-   (Merge `feature/igz-steel` into `main` first if you prefer `main` to be the
-   default branch; the tag is what matters to the catalog.)
-
-3. On GitHub open **Releases ▸ Draft a new release**, choose tag `v1.0.0`,
-   and attach `dist/igz_steel.zip` as a release asset. Publish the release.
-   The asset address will be
-   `https://github.com/dns-0/igz_steel/releases/download/v1.0.0/igz_steel.zip`.
-
-Do not rebuild the zip after this step: the catalog entry carries its SHA-256
-and the reviewers read that exact file. If you do rebuild it, recompute the
-hash with:
+Do not re-upload a different zip to that release: the catalog entry carries
+the fingerprint and the reviewers read that exact file. A changed package goes
+out as a new release (see section 4) with a recomputed hash:
 
 ```bash
 certutil -hashfile dist\igz_steel.zip SHA256
@@ -44,7 +31,7 @@ save a PNG of about 1200 × 750 pixels, under 600 KB, as `igz_steel.png`.
 1. Go to <https://github.com/ingelibre/ingetrazo-extensions>.
 2. In the `extensions/` folder click **Add file ▸ Create new file**, name it
    `igz_steel.toml`, and paste the contents of `catalog/igz_steel.toml` from
-   this repository with `dns-0` replaced.
+   this repository.
 3. In the `screenshots/` folder add `igz_steel.png` the same way.
 4. Click **Propose changes**, then **Create pull request**.
 

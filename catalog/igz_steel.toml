@@ -1,6 +1,6 @@
 # Catalog entry for https://github.com/ingelibre/ingetrazo-extensions
 # Copy this file to extensions/igz_steel.toml in that repository (via a pull
-# request). Replace dns-0 in the two URLs below first.
+# request). The URLs point at the published v1.0.0 release of dns-0/igz_steel.
 
 # Same as the file name: lowercase letters, digits and _.
 id = "igz_steel"
