@@ -1,0 +1,42 @@
+# Catalog entry for https://github.com/ingelibre/ingetrazo-extensions
+# Copy this file to extensions/igz_steel.toml in that repository (via a pull
+# request). Replace YOUR-GITHUB-USER in the two URLs below first.
+
+# Same as the file name: lowercase letters, digits and _.
+id = "igz_steel"
+version = "1.0.0"
+author = "David Songer"
+author_url = "https://github.com/YOUR-GITHUB-USER"
+
+# SPDX name of a free licence.
+license = "GPL-3.0-or-later"
+
+# Where people read your code.
+repository = "https://github.com/YOUR-GITHUB-USER/igz_steel"
+
+# The exact file IngeTrazo users will install: a .zip holding ONE folder
+# (igz_steel/) with an __init__.py. The address names the v1.0.0 release
+# asset, so what is reviewed cannot change afterwards.
+download = "https://github.com/YOUR-GITHUB-USER/igz_steel/releases/download/v1.0.0/igz_steel.zip"
+# certutil -hashfile dist\igz_steel.zip SHA256   (recompute if the zip is rebuilt)
+sha256 = "81e8df9c35832f581c3309011f995de81ee8282f2397b4ba5241d25807029045"
+
+# The IngeTrazo version you tested with.
+ingetrazo = "0.5.8"
+
+# 1 to 4 of: architecture, bim, structures, terrain, drawing, analysis,
+# import-export, rendering, fabrication, productivity, education, other
+tags = ["structures", "bim", "fabrication"]
+
+# A picture in screenshots/ (png, jpg or webp, under 600 KB, ~1200x750).
+screenshot = "igz_steel.png"
+
+[name]
+es = "Perfiles de acero AISC"
+en = "AISC steel members"
+pt = "Perfis de aco AISC"
+
+[summary]   # one or two sentences, up to 240 characters
+es = "Coloca perfiles de acero de la base AISC v16 (W, C, L, HSS, tubo y mas), los estira por cualquier eje o longitud escrita, los etiqueta en BIM, asigna capas y genera una lista de materiales."
+en = "Places AISC v16 steel shapes (W, C, L, HSS, pipe and more), stretches them along any axis or typed length, tags them for BIM, assigns layers and builds a bill of materials."
+pt = "Insere perfis de aco da base AISC v16 (W, C, L, HSS, tubo e mais), estica-os em qualquer eixo ou comprimento digitado, etiqueta para BIM, atribui camadas e gera uma lista de materiais."
