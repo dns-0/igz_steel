@@ -124,6 +124,19 @@ def convert(xlsx: Path) -> dict:
             "A_mm2": _num(row[met["A"]]),
             "notes": "sloped flanges" if (fam in ("M", "MT") and note == "T") else "",
         })
+    singles = {s["label"]: s for s in shapes if s["family"] == "L"}
+    for s in shapes:
+        if s["family"] != "2L":
+            continue
+        base = s["label"][2:]
+        for tok in ("LLBB", "SLBB"):
+            base = base.replace(tok, "")
+        single = singles.get("L" + "X".join(base.split("X")[:3]))
+        if single is not None:
+            for key in ("kdes",):
+                if key in single["dims"] and key not in s["dims"]:
+                    s["dims"][key] = single["dims"][key]
+                    s["dims_mm"][key] = single["dims_mm"][key]
     if len(shapes) != 2299:
         raise SystemExit(f"expected 2299 shapes, got {len(shapes)}")
     return {"source": "AISC Shapes Database v16.0 (August 2023)",

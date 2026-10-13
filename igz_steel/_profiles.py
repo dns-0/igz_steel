@@ -220,7 +220,7 @@ def _assemble(raw_regions, segs=ARC_SEGMENTS):
     area = 0.0
     cx = cy = 0.0
     for outer_corners, hole_corner_lists in raw_regions:
-        outer = round_corners(outer_corners, segs)
+        outer = outer_corners if isinstance(outer_corners, Loop) else round_corners(outer_corners, segs)
         a = signed_area(outer.points)
         c = polygon_centroid(outer.points)
         area += a
@@ -228,7 +228,7 @@ def _assemble(raw_regions, segs=ARC_SEGMENTS):
         cy += a * c[1]
         holes = []
         for hc in hole_corner_lists:
-            h = round_corners(hc, segs)
+            h = hc if isinstance(hc, Loop) else round_corners(hc, segs)
             ha = signed_area(h.points)
             hcen = polygon_centroid(h.points)
             area -= ha
@@ -236,7 +236,8 @@ def _assemble(raw_regions, segs=ARC_SEGMENTS):
             cy -= ha * hcen[1]
             holes.append(reverse_loop(h))
         regions.append(Region(outer, holes))
-        sharp_all.append([(u, v) for (u, v, _r) in outer_corners])
+        sharp_all.append([] if isinstance(outer_corners, Loop)
+                         else [(u, v) for (u, v, _r) in outer_corners])
     cx, cy = (cx / area, cy / area) if area > 0 else (0.0, 0.0)
 
     def shift(p):
@@ -273,10 +274,61 @@ def _assemble(raw_regions, segs=ARC_SEGMENTS):
     return Profile(regions, points, (0.0, 0.0), area, bbox)
 
 
+def _angle_corners(vert, horiz, t, r):
+    """Heel at the origin, vertical leg along +v, horizontal leg along +u."""
+    return [(0, 0, 0), (horiz, 0, 0), (horiz, t, 0), (t, t, r), (t, vert, 0), (0, vert, 0)]
+
+
+def _angle(dims, fillets):
+    b, d, t = dims["b"], dims["d"], dims["t"]
+    r = _fillet_radius(dims, "t", fillets)
+    return [(_angle_corners(max(b, d), min(b, d), t, r), [])]
+
+
+def _double_angle(dims, fillets):
+    b, d, t = dims["b"], dims["d"], dims["t"]
+    gap = dims.get("gap", 0.0)
+    llbb = dims.get("llbb", True)
+    long_leg, short_leg = max(b, d), min(b, d)
+    vert, horiz = (long_leg, short_leg) if llbb else (short_leg, long_leg)
+    r = _fillet_radius(dims, "t", fillets)
+    right = [(u + gap / 2.0, v, rr) for (u, v, rr) in _angle_corners(vert, horiz, t, r)]
+    left = [(-u, v, rr) for (u, v, rr) in right][::-1]       # mirror, winding restored
+    return [(right, []), (left, [])]
+
+
+def _hss_rect(dims, fillets, segments=None):
+    H, B, t = dims["Ht"], dims["B"], dims["tdes"]
+    hb, hh = B / 2.0, H / 2.0
+    ro, ri = 2.0 * t, t
+    outer = [(-hb, -hh, ro), (hb, -hh, ro), (hb, hh, ro), (-hb, hh, ro)]
+    ib, ih = hb - t, hh - t
+    hole = [(-ib, -ih, ri), (ib, -ih, ri), (ib, ih, ri), (-ib, ih, ri)]
+    return [(outer, [hole])]
+
+
+def _round_tube(dims, fillets, segments=DEFAULT_ROUND_SEGMENTS):
+    ro = dims["OD"] / 2.0
+    ri = ro - dims["tdes"]
+    return [(circle_loop(ro, segments), [circle_loop(ri, segments)])]
+
+
+def _hss(dims, fillets, segments=DEFAULT_ROUND_SEGMENTS):
+    if "OD" in dims:
+        return _round_tube(dims, fillets, segments)
+    return _hss_rect(dims, fillets, segments)
+
+
+_BUILDERS.update({"L": _angle, "2L": _double_angle, "HSS": _hss, "PIPE": _round_tube})
+_WITH_SEGMENTS = {"HSS", "PIPE"}
+
+
 def build_profile(family, dims, fillets=True, segments=DEFAULT_ROUND_SEGMENTS):
     builder = _BUILDERS.get(family)
     if builder is None:
         raise ValueError(f"unknown shape family {family!r}")
     dims = dict(dims)
     dims["_sloped"] = family in SLOPED_FLANGES
+    if family in _WITH_SEGMENTS:
+        return _assemble(builder(dims, fillets, segments))
     return _assemble(builder(dims, fillets))
