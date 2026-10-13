@@ -13,7 +13,7 @@ the catalog holds one TOML entry pointing at a fixed release file.
 2. From this folder, push the branch and the tag:
 
 ```bash
-git remote add origin https://github.com/YOUR-GITHUB-USER/igz_steel.git
+git remote add origin https://github.com/dns-0/igz_steel.git
 git push -u origin feature/igz-steel
 git push origin v1.0.0
 ```
@@ -24,7 +24,7 @@ git push origin v1.0.0
 3. On GitHub open **Releases ▸ Draft a new release**, choose tag `v1.0.0`,
    and attach `dist/igz_steel.zip` as a release asset. Publish the release.
    The asset address will be
-   `https://github.com/YOUR-GITHUB-USER/igz_steel/releases/download/v1.0.0/igz_steel.zip`.
+   `https://github.com/dns-0/igz_steel/releases/download/v1.0.0/igz_steel.zip`.
 
 Do not rebuild the zip after this step: the catalog entry carries its SHA-256
 and the reviewers read that exact file. If you do rebuild it, recompute the
@@ -44,7 +44,7 @@ save a PNG of about 1200 × 750 pixels, under 600 KB, as `igz_steel.png`.
 1. Go to <https://github.com/ingelibre/ingetrazo-extensions>.
 2. In the `extensions/` folder click **Add file ▸ Create new file**, name it
    `igz_steel.toml`, and paste the contents of `catalog/igz_steel.toml` from
-   this repository with `YOUR-GITHUB-USER` replaced.
+   this repository with `dns-0` replaced.
 3. In the `screenshots/` folder add `igz_steel.png` the same way.
 4. Click **Propose changes**, then **Create pull request**.
 
