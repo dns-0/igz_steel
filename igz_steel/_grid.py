@@ -167,3 +167,82 @@ def fmt_length(metres, units="imperial"):
         return f"{sign}{feet}'-{inches}\""
     g = math.gcd(frac, 16)
     return f"{sign}{feet}'-{inches} {frac // g}/{16 // g}\""
+
+
+# ------------------------------------------------------------ names
+
+LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"          # drafting alphabet: no I, no O
+_RE_LEAD_LETTERS = re.compile(r"^([A-Za-z]+)")
+_RE_LEAD_DIGITS = re.compile(r"^(\d+)")
+
+
+def _letter_index(token):
+    t = token.upper()
+    if t and t[0] in "IO" and len(set(t)) == 1:
+        raise GridError("I and O are not used for grid names")
+    if not t or len(set(t)) != 1 or t[0] not in LETTERS:
+        raise GridError(f'"{token}" is not a grid letter: use A to Z, then AA, BB …')
+    return (len(t) - 1) * len(LETTERS) + LETTERS.index(t[0])
+
+
+def _letter_name(index):
+    reps, i = divmod(index, len(LETTERS))
+    return LETTERS[i] * (reps + 1)
+
+
+def name_scheme(start):
+    s = str(start).strip()
+    if _RE_LEAD_DIGITS.match(s):
+        return "numbers"
+    if _RE_LEAD_LETTERS.match(s):
+        return "letters"
+    raise GridError(f'"{start}" must start with a letter or a number')
+
+
+def letter_sequence(start, count):
+    m = _RE_LEAD_LETTERS.match(str(start).strip())
+    if not m:
+        raise GridError(f'"{start}" must start with a letter')
+    first = _letter_index(m.group(1))
+    return [_letter_name(first + k) for k in range(int(count))]
+
+
+def number_sequence(start, count):
+    m = _RE_LEAD_DIGITS.match(str(start).strip())
+    if not m:
+        raise GridError(f'"{start}" must start with a number')
+    first = int(m.group(1))
+    return [str(first + k) for k in range(int(count))]
+
+
+def name_sequence(start, count):
+    if name_scheme(start) == "letters":
+        return letter_sequence(start, count)
+    return number_sequence(start, count)
+
+
+def next_name(name):
+    return name_sequence(name, 2)[1]
+
+
+def reconcile_names(start, count, existing):
+    """Names for ``count`` lines. Regenerated from ``start`` when ``existing``
+    is empty or is itself the generated sequence (nothing was renamed);
+    otherwise the existing names are kept, extended with ``next_name`` of the
+    last one, or truncated."""
+    count = int(count)
+    if not existing:
+        return name_sequence(start, count)
+    existing = [str(n) for n in existing]
+    try:
+        if existing == name_sequence(start, len(existing)):
+            return name_sequence(start, count)
+    except GridError:
+        pass
+    names = existing[:count]
+    while len(names) < count:
+        try:
+            names.append(next_name(names[-1]))
+        except GridError:
+            names.append(str(len(names) + 1))
+    return names
