@@ -690,3 +690,111 @@ class RadialGrid(_GridMixin):
                        visible=bool(d.get("visible", True)))
         except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
             raise GridError(f"bad radial grid: {exc}") from None
+
+
+# ------------------------------------------------------------ document block
+
+LEVEL_PATTERNS = ("EL {el}", "T.O.S. EL {el}", "Level {n}")
+
+
+def grid_from_dict(d):
+    kind = d.get("kind") if isinstance(d, dict) else None
+    if kind == "rect":
+        return RectGrid.from_dict(d)
+    if kind == "radial":
+        return RadialGrid.from_dict(d)
+    raise GridError(f"unknown grid kind {kind!r}")
+
+
+def new_grid_id(grids):
+    used = {g.id for g in grids}
+    n = 1
+    while f"g{n}" in used:
+        n += 1
+    return f"g{n}"
+
+
+def unique_name(grids, base):
+    names = {g.name for g in grids}
+    if base not in names:
+        return base
+    n = 2
+    while f"{base} {n}" in names:
+        n += 1
+    return f"{base} {n}"
+
+
+def parse_block(raw):
+    """``(grids, meta, errors)`` from the document value. Never raises: a bad
+    grid is reported in ``errors`` and skipped, the rest load."""
+    grids, errors = [], []
+    meta = {"active_grid": None, "units": "imperial"}
+    if raw is None or raw == {}:
+        return grids, meta, errors
+    if not isinstance(raw, dict):
+        errors.append("grid data is not an object")
+        return grids, meta, errors
+    items = raw.get("grids", []) or []
+    if not isinstance(items, list):
+        errors.append("grids is not a list")
+        items = []
+    for i, d in enumerate(items):
+        try:
+            g = grid_from_dict(d)
+        except GridError as exc:
+            errors.append(f"grid {i + 1}: {exc}")
+            continue
+        if any(x.id == g.id for x in grids):
+            g.id = new_grid_id(grids)
+        grids.append(g)
+    if raw.get("units") in UNITS:
+        meta["units"] = raw["units"]
+    act = raw.get("active_grid")
+    if any(g.id == act for g in grids):
+        meta["active_grid"] = act
+    elif grids:
+        meta["active_grid"] = grids[0].id
+    return grids, meta, errors
+
+
+def dump_block(grids, active_grid=None, units="imperial"):
+    return {"version": BLOCK_VERSION, "grids": [g.to_dict() for g in grids],
+            "active_grid": active_grid, "units": units if units in UNITS else "imperial"}
+
+
+def add_levels(levels, count, spacing, direction, pattern="EL {el}", units="imperial"):
+    """``count`` new levels every ``spacing`` metres above the top (``"up"``)
+    or below the bottom (``"down"``), named by ``pattern`` with ``{el}`` the
+    formatted elevation and ``{n}`` the running number."""
+    count, spacing = int(count), float(spacing)
+    if count < 1:
+        raise GridError("Add at least one level")
+    if spacing <= 0.0:
+        raise GridError("The level spacing must be greater than zero")
+    out = sorted_levels(list(levels))
+    if len(out) + count > MAX_LEVELS:
+        raise GridError(f"At most {MAX_LEVELS} levels")
+    base = out[-1].z if direction == "up" else out[0].z
+    step = spacing if direction == "up" else -spacing
+    new = []
+    for k in range(1, count + 1):
+        z = base + step * k
+        if any(abs(z - lv.z) < LEVEL_TOL for lv in out):
+            raise GridError(f"A level already exists at {fmt_length(z, units)}")
+        try:
+            name = str(pattern).format(el=fmt_length(z, units), n=len(out) + k)
+        except (KeyError, IndexError, ValueError):
+            raise GridError("The name pattern may use {el} and {n} only") from None
+        new.append(Level(name, z))
+    return sorted_levels(out + new)
+
+
+def default_rect_grid(gid, name, units="imperial"):
+    if units == "metric":
+        xt, yt, ext = "3@8", "2@6", 1.5
+    else:
+        xt, yt, ext = "3@25'", "2@20'", 5 * FT_M
+    return RectGrid(id=gid, name=name, x_text=xt, x_spacings=parse_spacing_list(xt, units),
+                    y_text=yt, y_spacings=parse_spacing_list(yt, units),
+                    extend={k: ext for k in ("x_neg", "x_pos", "y_neg", "y_pos")},
+                    levels=[Level("EL " + fmt_length(0.0, units), 0.0)])
