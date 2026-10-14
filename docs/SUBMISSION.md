@@ -8,9 +8,9 @@ the catalog holds one TOML entry pointing at a fixed release file.
 
 ## 1. The code is published (done)
 
-The repository is <https://github.com/dns-0/igz_steel> (branch `main`, tag
-`v1.0.0`) and the release <https://github.com/dns-0/igz_steel/releases/tag/v1.0.0>
-carries `igz_steel.zip` as its asset. The catalog entry in
+The repository is <https://github.com/dns-0/igz_steel> (branch `main`, tags
+`v1.0.0` and `v1.1.0`) and each release <https://github.com/dns-0/igz_steel/releases>
+carries its own `igz_steel.zip` asset. The catalog entry in
 `catalog/igz_steel.toml` names that asset and its SHA-256.
 
 Do not re-upload a different zip to that release: the catalog entry carries
@@ -42,7 +42,7 @@ does none of these). A maintainer then approves the entry; it appears in the
 app's manager labelled **Community**. If a maintainer later reads the code in
 full, the entry becomes **Reviewed**.
 
-## 4. Later versions
+## 4. Later versions (done for 1.1.0: layout grids)
 
 Bump `__version__` in `igz_steel/__init__.py`, rebuild the zip, tag a new
 release (for example `v1.1.0`) with the new asset, and open a pull request on
@@ -57,4 +57,4 @@ account named in `author_url`, the bot publishes it automatically.
 - Dimensional data comes from the AISC Shapes Database v16.0 with AISC's
   disclaimer reproduced; the workbook itself is not redistributed.
 - No dependencies beyond IngeTrazo. Tested with 0.5.8 (Extension API 2).
-- The repository ships 90 automated tests (`.venv/Scripts/python -m pytest -q`).
+- The repository ships 255 automated tests (`.venv/Scripts/python -m pytest -q`).
