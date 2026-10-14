@@ -1,0 +1,163 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+import pytest
+from PySide6.QtGui import QImage
+
+from igz_steel._grid import FT_M, Level, RectGrid, dump_block
+
+
+@pytest.fixture
+def dialog(qapp):
+    from igz_steel._grid_dialog import GridDialog
+    d = GridDialog(None, units="imperial", persist=False)
+    d.confirm = lambda title, text: True
+    yield d
+    d.close()
+    d.deleteLater()
+    qapp.processEvents()
+
+
+def main_block():
+    g = RectGrid(id="g1", name="Main", origin=(0.0, 0.0, 30.48),
+                 x_text="25', 30'", x_spacings=[25 * FT_M, 30 * FT_M],
+                 y_text="20'", y_spacings=[20 * FT_M],
+                 extend={k: 5 * FT_M for k in ("x_neg", "x_pos", "y_neg", "y_pos")},
+                 levels=[Level("EL 100'-0\"", 30.48), Level("EL 112'-0\"", 34.1376)])
+    return dump_block([g], "g1", "imperial")
+
+
+def test_empty_document_shows_a_default_grid(dialog):
+    assert dialog.grid_combo.count() == 1 and dialog.current_grid().kind == "rect"
+    assert dialog.levels_table.rowCount() == 1
+    assert dialog.x_spacing.text() == "3@25'" and dialog.apply_button.isEnabled()
+    assert dialog.preview._grid is dialog.current_grid()
+
+
+def test_bad_spacing_disables_apply_and_shows_message(dialog):
+    dialog.x_spacing.setText("3@")
+    assert not dialog.apply_button.isEnabled()
+    assert "after @" in dialog.status_label.text()
+    assert dialog.preview._grid.x_spacings == pytest.approx([25 * FT_M] * 3)   # last good state kept
+    dialog.x_spacing.setText("25', 3@30', 25'")
+    assert dialog.apply_button.isEnabled() and dialog.status_label.text() == ""
+
+
+def test_apply_emits_block(dialog):
+    got = []
+    dialog.applied.connect(got.append)
+    dialog.x_spacing.setText("25', 3@30', 25'")
+    dialog.y_spacing.setText("4@20'")
+    dialog.origin_z.setText("100'")
+    dialog.origin_z.editingFinished.emit()
+    dialog.rotation_spin.setValue(30.0)
+    dialog.extend_edit.setText("5'")
+    dialog.extend_edit.editingFinished.emit()
+    dialog.apply_button.click()
+    assert len(got) == 1
+    g = got[0]["grids"][0]
+    assert g["x"]["spacings"] == pytest.approx([25 * FT_M] + [30 * FT_M] * 3 + [25 * FT_M])
+    assert g["x"]["names"] == ["A", "B", "C", "D", "E", "F"] and g["y"]["names"] == ["1", "2", "3", "4", "5"]
+    assert g["origin"][2] == pytest.approx(30.48) and g["levels"][0]["z"] == pytest.approx(30.48)
+    assert g["rotation_deg"] == 30.0 and g["extend"]["y_pos"] == pytest.approx(5 * FT_M)
+    assert got[0]["units"] == "imperial" and got[0]["active_grid"] == "g1"
+
+
+def test_load_block_fills_fields_and_units_switch_reformats(dialog):
+    dialog.load_block(main_block())
+    assert dialog.grid_combo.currentText() == "Main"
+    assert dialog.x_spacing.text() == "25', 30'" and dialog.levels_table.rowCount() == 2
+    assert dialog.levels_table.item(0, 1).text() == "100'-0\""
+    assert dialog.origin_z.text() == "100'-0\""
+    dialog.metric_radio.setChecked(True)
+    assert dialog.levels_table.item(0, 1).text() == "30.480 m" and dialog.units() == "metric"
+    assert dialog.block()["units"] == "metric"
+    dialog.load_block(main_block())                       # the block's units win on load
+    assert dialog.units() == "imperial"
+
+
+def test_start_change_regenerates_and_rename_survives_spacing_change(dialog):
+    dialog.x_start.setText("C")
+    dialog.x_start.editingFinished.emit()
+    assert dialog.current_grid().x_names == ["C", "D", "E", "F"]
+    dialog.preview.renamed.emit("x", 1, "D.5")
+    assert dialog.current_grid().x_names[1] == "D.5"
+    dialog.x_spacing.setText("4@25'")
+    assert dialog.current_grid().x_names == ["C", "D.5", "E", "F", "G"]
+    dialog.swap_button.click()
+    assert dialog.current_grid().x_start == "1" and dialog.current_grid().y_start == "C"
+    assert dialog.current_grid().x_names == ["1", "2", "3", "4", "5"]
+
+
+def test_levels_table_edits_and_buttons(dialog):
+    dialog.load_block(main_block())
+    dialog.levels_table.selectRow(1)
+    assert dialog.current_grid().active_level == 1
+    dialog.add_level_button.click()                        # one level above the top, same spacing
+    assert dialog.levels_table.rowCount() == 3
+    assert dialog.current_grid().levels[-1].z == pytest.approx(34.1376 + 3.6576)
+    dialog.levels_table.item(2, 1).setText("130'")
+    assert dialog.current_grid().levels[-1].z == pytest.approx(130 * FT_M)
+    dialog.levels_table.item(2, 0).setText("Roof")
+    assert dialog.current_grid().levels[-1].name == "Roof"
+    dialog.levels_table.selectRow(2)
+    dialog.remove_level_button.click()
+    assert dialog.levels_table.rowCount() == 2
+    dialog.levels_table.selectRow(0)
+    dialog.remove_level_button.click()
+    dialog.remove_level_button.click()
+    assert dialog.levels_table.rowCount() == 1             # the last level stays
+    dialog.levels_table.item(0, 1).setText("garbage")
+    assert "garbage" not in dialog.levels_table.item(0, 1).text() and dialog.status_label.text()
+
+
+def test_single_level_follows_origin_z(dialog):
+    dialog.origin_z.setText("50'")
+    dialog.origin_z.editingFinished.emit()
+    assert dialog.current_grid().levels[0].z == pytest.approx(50 * FT_M)
+
+
+def test_grid_list_buttons(dialog):
+    dialog.ask_text = lambda title, label, default: ("Pipe Rack", True)
+    dialog.new_rect_button.click()
+    assert dialog.grid_combo.count() == 2 and dialog.current_grid().name == "Pipe Rack"
+    dialog.dup_button.click()
+    assert dialog.grid_combo.count() == 3 and dialog.current_grid().name == "Pipe Rack 2"
+    dialog.ask_text = lambda title, label, default: ("Renamed", True)
+    dialog.rename_button.click()
+    assert dialog.current_grid().name == "Renamed" and dialog.grid_combo.currentText() == "Renamed"
+    dialog.visible_check.setChecked(False)
+    assert dialog.current_grid().visible is False
+    dialog.delete_button.click()
+    assert dialog.grid_combo.count() == 2
+    dialog.delete_button.click()
+    dialog.delete_button.click()
+    assert dialog.grid_combo.count() == 1                  # a document keeps at least one grid in the dialog
+
+
+def test_preview_paints_rect_grid(dialog):
+    dialog.load_block(main_block())
+    dialog.preview.resize(400, 300)
+    img = QImage(400, 300, QImage.Format_ARGB32)
+    dialog.preview.render(img)
+    assert dialog.preview._bubbles_px                      # bubbles were laid out
+    hit = dialog.preview.bubble_at(*dialog.preview._bubbles_px[0][:2])
+    assert hit is not None and hit[0] in ("x", "y")
+
+
+def test_pick_signals_and_setters(dialog):
+    got = []
+    dialog.pick_origin_requested.connect(lambda: got.append("o"))
+    dialog.pick_direction_requested.connect(lambda: got.append("d"))
+    dialog.pick_origin_button.click()
+    dialog.pick_dir_button.click()
+    assert got == ["o", "d"]
+    dialog.set_origin((1.0, 2.0, 3.0))
+    assert dialog.current_grid().origin == pytest.approx((1.0, 2.0, 3.0))
+    assert dialog.origin_x.text() == "3'-3 3/8\""
+    dialog.set_rotation(12.5)
+    assert dialog.rotation_spin.value() == 12.5 and dialog.current_grid().rotation_deg == 12.5
+
+
+def test_document_change_reloads_and_notes_it(dialog):
+    dialog.x_spacing.setText("9@10'")
+    dialog.load_block(main_block(), notice="Reloaded from the document")
+    assert dialog.x_spacing.text() == "25', 30'" and "Reloaded" in dialog.status_label.text()
