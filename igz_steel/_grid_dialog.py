@@ -7,16 +7,19 @@ import copy
 import math
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSettings, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QVector3D
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
                                QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton,
                                QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from ._grid import (MAX_GRIDS, UNITS, GridError, Level, RadialGrid, RectGrid, add_levels,
-                    cumulative, default_rect_grid, dump_block, fmt_length, LEVEL_PATTERNS,
-                    new_grid_id, parse_angle_list, parse_block, parse_length,
-                    parse_spacing_list, sorted_levels, unique_name)
+from tools.base import Tool
+
+from ._grid import (LEVEL_PATTERNS, MAX_GRIDS, UNITS, GridError, Level, RadialGrid, add_levels,
+                    cumulative, default_rect_grid, dump_block, fmt_length, new_grid_id,
+                    parse_angle_list, parse_block, parse_length, parse_spacing_list,
+                    unique_name)
+from ._tools import _flash, xyz
 
 ACCENT = QColor.fromRgbF(0.95, 0.45, 0.16)
 BUBBLE_R = 11.0
@@ -514,6 +517,9 @@ class GridDialog(QDialog):
             self._fill_fields(fit=True)
 
     def set_origin(self, xyz):
+        if self._radial_dialog is not None:
+            self._radial_dialog.set_center(xyz)
+            return
         g = self.current_grid()
         old_z = g.origin[2]
         g.origin = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
@@ -744,6 +750,8 @@ class GridDialog(QDialog):
             if g.kind == "rect":
                 g.x_text = retext_spacings(g.x_text, g.x_spacings, self._units)
                 g.y_text = retext_spacings(g.y_text, g.y_spacings, self._units)
+            else:
+                g.radii_text = retext_spacings(g.radii_text, g.radii, self._units)
         self._fill_fields()
 
     def _on_renamed(self, direction, index, name):
@@ -834,7 +842,7 @@ class GridDialog(QDialog):
         self._finish_edit()
 
     def _add_levels(self):
-        """Completed in Task 8 (AddLevelsDialog)."""
+        """Prepend or append a run of new levels chosen in AddLevelsDialog."""
         g = self.current_grid()
         dlg = AddLevelsDialog(self, g.levels, self._units)
         if dlg.exec() != QDialog.Accepted:
@@ -885,14 +893,56 @@ class GridDialog(QDialog):
                                          unique_name(self._grids, name.strip()), self._units))
 
     def _new_radial(self):
-        """Completed in Task 8 (RadialDialog)."""
         self._open_radial(None)
 
     def _edit_radial(self):
-        """Completed in Task 8 (RadialDialog)."""
         g = self.current_grid()
         if g is not None and g.kind == "radial":
             self._open_radial(g)
+
+    def _open_radial(self, grid):
+        if self._radial_dialog is not None:
+            self._radial_dialog.close()
+            self._radial_dialog.deleteLater()
+            self._radial_dialog = None
+        if grid is None:
+            name, ok = self.ask_text("New radial grid", "Name:", unique_name(self._grids, "Radial"))
+            if not ok or not name.strip():
+                return
+            dlg = RadialDialog(self, self._units, grid_id=new_grid_id(self._grids),
+                               name=unique_name(self._grids, name.strip()))
+            editing = None
+        else:
+            dlg = RadialDialog(self, self._units, grid=grid)
+            editing = grid.id
+        dlg.pick_center_requested.connect(self.pick_origin_requested)
+        dlg.finished.connect(lambda result, d=dlg, e=editing: self._radial_done(d, e, result))
+        self._radial_dialog = dlg
+        self.setEnabled(False)
+        dlg.setEnabled(True)                 # a child window inherits the disabled state
+        dlg.show()
+
+    def _radial_done(self, dlg, editing, result):
+        self.setEnabled(True)
+        if self._radial_dialog is dlg:
+            self._radial_dialog = None
+        if result != QDialog.Accepted:
+            dlg.deleteLater()
+            return
+        try:
+            grid = dlg.result_grid()
+        except GridError as exc:
+            self._set_status(str(exc))
+            dlg.deleteLater()
+            return
+        dlg.deleteLater()
+        if editing is None:
+            self._add_grid(grid)
+        else:
+            self._grids = [grid if g.id == editing else g for g in self._grids]
+            self._active = grid.id
+            self._refresh_combo()
+            self._fill_fields(fit=True)
 
     def _duplicate(self):
         g = self.current_grid()
@@ -927,17 +977,359 @@ class GridDialog(QDialog):
         self.applied.emit(self.block())
 
 
-class AddLevelsDialog(QDialog):            # replaced in Task 8
+# ---------------------------------------------------------------- sub-dialogs
+
+class AddLevelsDialog(QDialog):
+    """Count, spacing, direction and name pattern for a run of new levels."""
+
     def __init__(self, parent, levels, units):
         super().__init__(parent)
+        self.setWindowTitle("Add levels")
         self._levels, self._units = list(levels), units
+        form = QFormLayout(self)
+        self.count_spin = QSpinBox()
+        self.count_spin.setRange(1, 100)
+        self.count_spin.setValue(5)
+        form.addRow("Count", self.count_spin)
+        self.spacing_edit = QLineEdit("12'" if units == "imperial" else "3.6")
+        form.addRow("Spacing", self.spacing_edit)
+        self.direction_combo = QComboBox()
+        self.direction_combo.addItems(["Up from the top", "Down from the bottom"])
+        form.addRow("Direction", self.direction_combo)
+        self.pattern_combo = QComboBox()
+        self.pattern_combo.setEditable(True)
+        self.pattern_combo.addItems(list(LEVEL_PATTERNS))
+        form.addRow("Name pattern", self.pattern_combo)
+        hint = QLabel("{el} is the elevation, {n} the running number")
+        hint.setStyleSheet("color: gray;")
+        form.addRow(hint)
+        buttons = QHBoxLayout()
+        self.ok_button = QPushButton("OK")
+        self.ok_button.clicked.connect(self.accept)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+        buttons.addStretch(1)
+        buttons.addWidget(self.ok_button)
+        buttons.addWidget(self.cancel_button)
+        form.addRow(buttons)
 
     def result_levels(self):
-        return self._levels
+        spacing = parse_length(self.spacing_edit.text(), self._units)
+        direction = "up" if self.direction_combo.currentIndex() == 0 else "down"
+        return add_levels(self._levels, self.count_spin.value(), spacing, direction,
+                          self.pattern_combo.currentText() or "EL {el}", self._units)
 
 
-def _open_radial_stub(self, grid):            # replaced in Task 8
-    self._set_status("Radial grids arrive in Task 8")
+class RadialDialog(QDialog):
+    """Center, radii, angles, tangent legs and extents of a radial grid, with
+    its own preview. Shown with ``show()``; the main dialog disables itself
+    while this one is open so a pick in the viewport can still run."""
+    pick_center_requested = Signal()
+
+    def __init__(self, parent, units, grid=None, grid_id="g1", name="Radial"):
+        super().__init__(parent)
+        self.setWindowTitle("Radial layout")
+        self.setModal(False)
+        self._units = units
+        self._errors = {}
+        self._loading = False
+        if grid is None:
+            radii_text = "20', 2@15'" if units == "imperial" else "6, 2@4.5"
+            grid = RadialGrid(id=grid_id, name=name,
+                              radii_text=radii_text,
+                              radii=parse_spacing_list(radii_text, units),
+                              angles_text="6@30", steps_deg=[30.0] * 6,
+                              extend={"radial_in": 5 * 0.3048, "radial_out": 5 * 0.3048, "arc": 0.0},
+                              levels=[Level("EL " + fmt_length(0.0, units), 0.0)])
+        self._grid = copy.deepcopy(grid)
+        self._build()
+        self._fill()
+
+    def _build(self):
+        root = QHBoxLayout(self)
+        form = QFormLayout()
+        row = QHBoxLayout()
+        self.center_x, self.center_y, self.center_z = QLineEdit(), QLineEdit(), QLineEdit()
+        for lab, w in (("X", self.center_x), ("Y", self.center_y), ("Z", self.center_z)):
+            row.addWidget(QLabel(lab))
+            row.addWidget(w)
+            w.editingFinished.connect(self._on_fields)
+        self.pick_center_button = QPushButton("Pick")
+        self.pick_center_button.clicked.connect(self.pick_center_requested)
+        row.addWidget(self.pick_center_button)
+        form.addRow("Center", row)
+        self.rotation_spin = QDoubleSpinBox()
+        self.rotation_spin.setRange(-360.0, 360.0)
+        self.rotation_spin.setDecimals(3)
+        self.rotation_spin.valueChanged.connect(self._on_fields)
+        form.addRow("Rotation °", self.rotation_spin)
+        r = QHBoxLayout()
+        self.radii_edit = QLineEdit()
+        self.radii_start = QLineEdit()
+        self.radii_start.setMaximumWidth(48)
+        r.addWidget(self.radii_edit)
+        r.addWidget(self.radii_start)
+        form.addRow("Radii (first, then spacings)", r)
+        a = QHBoxLayout()
+        self.angles_edit = QLineEdit()
+        self.angles_start = QLineEdit()
+        self.angles_start.setMaximumWidth(48)
+        a.addWidget(self.angles_edit)
+        a.addWidget(self.angles_start)
+        form.addRow("Angle steps °", a)
+        self.start_angle_spin = QDoubleSpinBox()
+        self.start_angle_spin.setRange(-360.0, 360.0)
+        self.start_angle_spin.setDecimals(3)
+        self.start_angle_spin.valueChanged.connect(self._on_fields)
+        form.addRow("Start angle °", self.start_angle_spin)
+        self.tangent_edit = QLineEdit()
+        form.addRow("Tangent length", self.tangent_edit)
+        self.ext_in_edit, self.ext_out_edit, self.ext_arc_edit = QLineEdit(), QLineEdit(), QLineEdit()
+        form.addRow("Extend radial lines inward", self.ext_in_edit)
+        form.addRow("Extend radial lines outward", self.ext_out_edit)
+        form.addRow("Extend arcs / legs", self.ext_arc_edit)
+        self.bubbles_combo = QComboBox()
+        self.bubbles_combo.addItems(["Outer ends and start", "All ends"])
+        self.bubbles_combo.currentIndexChanged.connect(self._on_fields)
+        form.addRow("Bubbles", self.bubbles_combo)
+        for w in (self.radii_edit, self.radii_start, self.angles_edit, self.angles_start,
+                  self.tangent_edit, self.ext_in_edit, self.ext_out_edit, self.ext_arc_edit):
+            w.editingFinished.connect(self._on_fields)
+        for w in (self.radii_edit, self.angles_edit):
+            w.textChanged.connect(self._on_fields)
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #c83c3c;")
+        self.status_label.setWordWrap(True)
+        form.addRow(self.status_label)
+        buttons = QHBoxLayout()
+        self.ok_button = QPushButton("OK")
+        self.ok_button.clicked.connect(self.accept)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+        buttons.addStretch(1)
+        buttons.addWidget(self.ok_button)
+        buttons.addWidget(self.cancel_button)
+        form.addRow(buttons)
+        root.addLayout(form, 0)
+        self.preview = GridPreview(self, self._units)
+        self.preview.renamed.connect(self._on_renamed)
+        root.addWidget(self.preview, 1)
+
+    def _fmt(self, metres):
+        return fmt_length(metres, self._units)
+
+    def _fill(self):
+        g = self._grid
+        self._loading = True
+        self.center_x.setText(self._fmt(g.origin[0]))
+        self.center_y.setText(self._fmt(g.origin[1]))
+        self.center_z.setText(self._fmt(g.origin[2]))
+        self.rotation_spin.setValue(g.rotation_deg)
+        self.radii_edit.setText(g.radii_text or ", ".join(self._fmt(r) for r in g.radii))
+        self.radii_start.setText(g.radii_start)
+        self.angles_edit.setText(g.angles_text or ", ".join(f"{s:g}" for s in g.steps_deg))
+        self.angles_start.setText(g.angles_start)
+        self.start_angle_spin.setValue(g.start_deg)
+        self.tangent_edit.setText(self._fmt(g.tangent))
+        self.ext_in_edit.setText(self._fmt(g.extend["radial_in"]))
+        self.ext_out_edit.setText(self._fmt(g.extend["radial_out"]))
+        self.ext_arc_edit.setText(self._fmt(g.extend["arc"]))
+        self.bubbles_combo.setCurrentIndex(1 if g.bubbles == "all" else 0)
+        self._loading = False
+        self.preview.set_grid(g, g.active_level, fit=True)
+        self._finish()
+
+    def _mark(self, widget, message):
+        if message:
+            self._errors[widget] = message
+            widget.setStyleSheet(ERROR_STYLE)
+            widget.setToolTip(message)
+        else:
+            self._errors.pop(widget, None)
+            widget.setStyleSheet("")
+            widget.setToolTip("")
+
+    def _parse_into(self, widget, fn):
+        try:
+            value = fn(widget.text())
+        except GridError as exc:
+            self._mark(widget, str(exc))
+            return None
+        self._mark(widget, None)
+        return value
+
+    def _read_length(self, widget, current):
+        """A length field's value; text that still shows ``current`` (to display
+        precision) leaves the stored, unrounded value alone."""
+        if widget.text() == self._fmt(current):
+            self._mark(widget, None)
+            return current
+        return self._parse_into(widget, lambda s: parse_length(s, self._units))
+
+    @staticmethod
+    def _spin_changed(spin, current):
+        """True when ``spin`` shows something other than ``current`` rounded to the
+        spin's precision, so an untouched spin never rewrites the stored value."""
+        return abs(spin.value() - round(current, spin.decimals())) > 1e-9
+
+    def _on_fields(self, *_args):
+        if self._loading:
+            return
+        g = self._grid
+        c = [self._read_length(w, cur) for w, cur in
+             zip((self.center_x, self.center_y, self.center_z), g.origin)]
+        if None not in c:
+            old_z = g.origin[2]
+            g.origin = tuple(c)
+            if len(g.levels) == 1 and abs(g.levels[0].z - old_z) < 1e-9:
+                g.levels[0].z = g.origin[2]
+        if self._spin_changed(self.rotation_spin, g.rotation_deg):
+            g.rotation_deg = float(self.rotation_spin.value())
+        if self._spin_changed(self.start_angle_spin, g.start_deg):
+            g.start_deg = float(self.start_angle_spin.value())
+        radii = self._parse_into(self.radii_edit, lambda s: parse_spacing_list(s, self._units))
+        if radii is not None:
+            g.set_radii(radii, self.radii_edit.text())
+        steps = self._parse_into(self.angles_edit, parse_angle_list)
+        if steps is not None:
+            g.set_angles(steps, self.angles_edit.text())
+        for direction, w in (("radii", self.radii_start), ("angles", self.angles_start)):
+            try:
+                if w.text().strip() != (g.radii_start if direction == "radii" else g.angles_start):
+                    g.set_start(direction, w.text())
+                self._mark(w, None)
+            except GridError as exc:
+                self._mark(w, str(exc))
+        t = self._read_length(self.tangent_edit, g.tangent)
+        if t is not None:
+            g.tangent = max(0.0, t)
+        for key, w in (("radial_in", self.ext_in_edit), ("radial_out", self.ext_out_edit),
+                       ("arc", self.ext_arc_edit)):
+            v = self._read_length(w, g.extend[key])
+            if v is not None:
+                g.extend[key] = max(0.0, v)
+        g.bubbles = "all" if self.bubbles_combo.currentIndex() == 1 else "top_left"
+        self._finish()
+
+    def _finish(self):
+        first = next(iter(self._errors.values()), "")
+        self.status_label.setText(first)
+        self.ok_button.setEnabled(not self._errors)
+        self.preview.set_error(first)
+        self.preview.set_grid(self._grid, self._grid.active_level)
+
+    def _on_renamed(self, direction, index, name):
+        try:
+            self._grid.rename_line(direction, index, name)
+        except (IndexError, GridError):
+            return
+        self._finish()
+
+    def set_center(self, xyz):
+        g = self._grid
+        old_z = g.origin[2]
+        g.origin = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+        if len(g.levels) == 1 and abs(g.levels[0].z - old_z) < 1e-9:
+            g.levels[0].z = g.origin[2]
+        self._fill()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def result_grid(self):
+        if self._errors:
+            raise GridError(next(iter(self._errors.values())))
+        return copy.deepcopy(self._grid)
 
 
-GridDialog._open_radial = _open_radial_stub
+# ---------------------------------------------------------------- pick tools
+
+class PickPointTool(Tool):
+    """One click hands a world point to the dialog and restores the previous tool."""
+    name = "Pick a grid point"
+    description = "Click a point for the grid dialog."
+    uses_snap = True
+
+    def __init__(self, on_point, previous=None, prompt="Click the grid origin  •  Esc cancels"):
+        self.on_point, self.previous, self.prompt = on_point, previous, prompt
+
+    def on_activate(self, viewport):
+        _flash(viewport, self.prompt, 3500)
+
+    def on_deactivate(self, viewport):
+        pass
+
+    def on_click(self, ctx):
+        p = xyz(ctx.world)
+        self._finish(ctx.viewport)
+        self.on_point(p)
+
+    def on_cancel(self, viewport):
+        self._finish(viewport)
+
+    def status_clause(self):
+        return self.prompt
+
+    def _finish(self, viewport):
+        try:
+            viewport.set_active_tool(self.previous)
+        except Exception:
+            pass
+
+
+class PickDirectionTool(Tool):
+    """Two clicks give the bearing of the second point from the first, in the
+    XY plane, degrees counter-clockwise from world +X."""
+    name = "Pick a grid direction"
+    description = "Click two points for the grid rotation."
+    uses_snap = True
+
+    def __init__(self, on_angle, previous=None):
+        self.on_angle, self.previous = on_angle, previous
+        self.start_point = None
+        self.hover = None
+
+    def on_activate(self, viewport):
+        self.start_point = None
+        _flash(viewport, "Click the first point of the grid X direction  •  Esc cancels", 3500)
+
+    def on_deactivate(self, viewport):
+        self.start_point = None
+        self.hover = None
+
+    def on_hover(self, ctx):
+        self.hover = xyz(ctx.world)
+        ctx.viewport.update()
+
+    def on_click(self, ctx):
+        p = xyz(ctx.world)
+        if self.start_point is None:
+            self.start_point = QVector3D(*p)
+            _flash(ctx.viewport, "Click the second point  •  Esc cancels", 3500)
+            return
+        s = xyz(self.start_point)
+        dx, dy = p[0] - s[0], p[1] - s[1]
+        if math.hypot(dx, dy) < 1e-6:
+            return
+        self._finish(ctx.viewport)
+        self.on_angle(math.degrees(math.atan2(dy, dx)))
+
+    def on_cancel(self, viewport):
+        self.start_point = None
+        self._finish(viewport)
+
+    def status_clause(self):
+        if self.start_point is None:
+            return "Grid direction: click  first point  •  Esc  cancel"
+        return "Grid direction: click  second point  •  Esc  cancel"
+
+    def rubber_band_lines(self):
+        if self.start_point is None or self.hover is None:
+            return []
+        return [(QVector3D(self.start_point), QVector3D(*self.hover))]
+
+    def _finish(self, viewport):
+        try:
+            viewport.set_active_tool(self.previous)
+        except Exception:
+            pass
