@@ -38,6 +38,21 @@ _RE_REPEAT = re.compile(r"^(\d+)\s*@\s*(.*)$")
 _RE_ANGLE = re.compile(rf"^(-?{_NUMBER})\s*(?:°|deg)?$")
 _QUOTES = {"”": '"', "″": '"', "’": "'", "′": "'"}
 
+# one item of a space-separated list: an optional ``N@`` repeat, then the value
+_REPEAT_PREFIX = r"(?:\d+\s*@\s*)?[+-]?"
+_INCHES = rf"(?:{_NUMBER}(?:\s+\d+\s*/\s*\d+)?|\d+\s*/\s*\d+)"     # 6, 6.5, 6 1/2, 1/2
+_INCH_MARK = r"\s*(?:\"|in\b)"
+_FOOT_MARK = r"\s*(?:'|ft\b)"
+_RE_LENGTH_TOKEN = re.compile(
+    _REPEAT_PREFIX + "(?:"
+    rf"{_NUMBER}{_FOOT_MARK}\s*-?\s*{_INCHES}{_INCH_MARK}"          # feet and inches
+    rf"|{_NUMBER}{_FOOT_MARK}"                                      # feet
+    rf"|{_INCHES}{_INCH_MARK}"                                      # inches
+    rf"|{_NUMBER}\s*(?:mm|cm|m)\b"                                  # metric
+    rf"|{_NUMBER}"                                                  # bare number
+    ")")
+_RE_ANGLE_TOKEN = re.compile(_REPEAT_PREFIX + rf"{_NUMBER}\s*(?:°|deg\b)?")
+
 
 def _clean(text):
     s = str(text).strip()
@@ -96,17 +111,36 @@ def _expand_one(item, parse_one, what):
     return [parse_one(rest)] * count
 
 
-def _expand(chunk, parse_one, what):
+def _tokens(chunk, token_re):
+    """``(items, stray)``: every ``token_re`` match in ``chunk`` and the first
+    non-blank text between or around them (``None`` when there is none)."""
+    items, stray, pos = [], None, 0
+    for m in token_re.finditer(chunk):
+        gap = chunk[pos:m.start()].strip()
+        if gap and stray is None:
+            stray = gap
+        items.append(m.group(0).strip())
+        pos = m.end()
+    tail = chunk[pos:].strip()
+    if tail and stray is None:
+        stray = tail
+    return items, stray
+
+
+def _expand(chunk, parse_one, what, token_re):
     """A comma-separated chunk: first as one item (imperial items may hold a
-    space, ``25' 6"``), else split on whitespace."""
+    space, ``25' 6"``), else split into items by ``token_re``, so
+    ``25' 6" 3@30'`` is two items, not three."""
     try:
         return _expand_one(chunk, parse_one, what)
     except GridError:
-        parts = chunk.split()
-        if len(parts) < 2:
+        items, stray = _tokens(_clean(chunk), token_re)
+        if len(items) < 2:
             raise
+    if stray is not None:
+        raise GridError(f'Cannot read "{stray}" in "{chunk}"')
     out = []
-    for p in parts:
+    for p in items:
         out.extend(_expand_one(p, parse_one, what))
     return out
 
@@ -118,7 +152,7 @@ def parse_spacing_list(text, units="imperial"):
         raise GridError("Enter at least one spacing")
     out = []
     for c in chunks:
-        out.extend(_expand(c, lambda s: parse_length(s, units), "spacing"))
+        out.extend(_expand(c, lambda s: parse_length(s, units), "spacing", _RE_LENGTH_TOKEN))
     for v in out:
         if v <= 0:
             raise GridError("Spacings must be greater than zero")
@@ -143,7 +177,7 @@ def parse_angle_list(text):
         raise GridError("Enter at least one angle step")
     out = []
     for c in chunks:
-        out.extend(_expand(c, _parse_angle, "angle"))
+        out.extend(_expand(c, _parse_angle, "angle", _RE_ANGLE_TOKEN))
     for v in out:
         if v <= 0:
             raise GridError("Angle steps must be greater than zero")
@@ -158,9 +192,12 @@ def fmt_length(metres, units="imperial"):
     """``25'-6 1/2"`` (to the 1/16) or ``7.620 m``."""
     v = float(metres)
     if units == "metric":
-        return f"{v:.3f} m"
-    sign = "-" if v < 0 else ""
+        s = f"{v:.3f}"
+        if s.startswith("-") and float(s) == 0.0:      # never "-0.000 m"
+            s = s[1:]
+        return f"{s} m"
     sixteenths = int(round(abs(v) / IN_M * 16))
+    sign = "-" if v < 0 and sixteenths else ""          # never "-0'-0\""
     feet, rem = divmod(sixteenths, 12 * 16)
     inches, frac = divmod(rem, 16)
     if frac == 0:
@@ -321,7 +358,7 @@ def _extend_from(raw, keys):
         raw = {}
     if not isinstance(raw, dict):
         raise GridError("extend must be an object")
-    return {k: _finite(raw.get(k, 0.0), "extend") for k in keys}
+    return {k: max(0.0, _finite(raw.get(k, 0.0), "extend")) for k in keys}
 
 
 def _bubbles_mode(raw):
@@ -417,6 +454,9 @@ class RectGrid(_GridMixin):
 
     # -- geometry
     def lines(self, level_index=None):
+        """Every line is a polyline with a vertex at each crossing,
+        ``[start, crossing 0, crossing 1, …, end]``, so a line partly behind
+        the camera still draws the segments in front of it."""
         z = self.level(level_index).z
         xs, ys = cumulative(self.x_spacings), cumulative(self.y_spacings)
         e = self.extend
@@ -427,14 +467,16 @@ class RectGrid(_GridMixin):
             bubbles = [Bubble(name, b, self.direction(0.0, 1.0))]
             if self.bubbles == "all":
                 bubbles.append(Bubble(name, a, self.direction(0.0, -1.0)))
-            out.append(GridLine(name, "x", i, [a, b], bubbles))
+            pts = [a] + [self.to_world(u, v, z) for v in ys] + [b]
+            out.append(GridLine(name, "x", i, pts, bubbles))
         for j, (v, name) in enumerate(zip(ys, self.y_names)):
             a = self.to_world(-e["x_neg"], v, z)
             b = self.to_world(xs[-1] + e["x_pos"], v, z)
             bubbles = [Bubble(name, a, self.direction(-1.0, 0.0))]
             if self.bubbles == "all":
                 bubbles.append(Bubble(name, b, self.direction(1.0, 0.0)))
-            out.append(GridLine(name, "y", j, [a, b], bubbles))
+            pts = [a] + [self.to_world(u, v, z) for u in xs] + [b]
+            out.append(GridLine(name, "y", j, pts, bubbles))
         return out
 
     def intersections(self, level_index=None):
@@ -783,7 +825,7 @@ def add_levels(levels, count, spacing, direction, pattern="EL {el}", units="impe
             raise GridError(f"A level already exists at {fmt_length(z, units)}")
         try:
             name = str(pattern).format(el=fmt_length(z, units), n=len(out) + k)
-        except (KeyError, IndexError, ValueError):
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
             raise GridError("The name pattern may use {el} and {n} only") from None
         new.append(Level(name, z))
     return sorted_levels(out + new)

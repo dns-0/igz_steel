@@ -69,6 +69,16 @@ def test_add_levels_refuses_bad_input():
         add_levels(base, 1, 3.0, "up", "EL {elevation}")
     with pytest.raises(GridError, match="At most"):
         add_levels(base, 99, 1.0, "up")
+    for pattern in ("EL {el.nope}", "Level {n[0]}", "EL {el:d}"):     # Attribute-, Type-, ValueError
+        with pytest.raises(GridError, match="pattern"):
+            add_levels(base, 1, 3.0, "up", pattern)
+
+
+def test_negative_extend_in_a_block_is_clamped():
+    d = good()
+    d["extend"] = {"x_neg": -2.0, "x_pos": 1.0}
+    g = grid_from_dict(d)
+    assert g.extend == {"x_neg": 0.0, "x_pos": 1.0, "y_neg": 0.0, "y_pos": 0.0}
 
 
 def test_default_grid():

@@ -200,15 +200,6 @@ def test_pick_select_and_delete(qapp, store):
     assert s.grids == []
 
 
-def test_double_pick_requests_edit(store):
-    s, app = store
-    got = []
-    s.on_edit_request = got.append
-    s.on_select("g1")
-    s.on_select("g1")
-    assert got == ["g1"]
-
-
 def test_register_guards_missing_api():
     from igz_steel._grid_host import GridStore
     app = FakeApp(block(main_grid()))
@@ -244,7 +235,10 @@ def test_host_callbacks_never_raise(qapp, store):
     s, app = store
     s.on_edit_request = lambda gid: (_ for _ in ()).throw(RuntimeError("boom"))
     s.on_select("g1")
-    s.on_select("g1")                                  # fires the failing request
+    s.on_select("g1")                                  # picks never call the edit request
+    app.viewport.flash_status = lambda text, msec: (_ for _ in ()).throw(RuntimeError("boom"))
+    s.on_select("g1")
+    del app.viewport.flash_status
     s.confirm = lambda grid: (_ for _ in ()).throw(RuntimeError("boom"))
     s.delete("g1")
     assert app.sets == [] and s.find("g1") is not None
@@ -272,13 +266,44 @@ def test_snap_in_plan_view_prefers_the_active_level():
     assert res.label == "A-1 · EL 112"
 
 
-def test_triple_pick_requests_edit_once(store):
+def test_picks_select_and_never_request_edit(store):
     s, app = store
     got = []
     s.on_edit_request = got.append
-    for _ in range(3):
-        s.on_select("g1")
-    assert got == ["g1"]
+    for item in ("g1", None, "g1", "g1"):              # the host sends None before each pick
+        s.on_select(item)
+    assert got == [] and s.selected_id == "g1"
+
+
+def test_reload_reports_whether_the_block_changed(store):
+    s, app = store
+    grids = s.grids
+    assert s.reload() is False and s.grids is grids     # same block: nothing re-parsed
+    app._raw = block(main_grid())                       # an equal copy is still the same block
+    assert s.reload() is False and s.grids is grids
+    app._raw = block(main_grid(name="Renamed"))
+    assert s.reload() is True and s.grids[0].name == "Renamed"
+    app._raw["grids"][0]["name"] = "Mutated in place"   # the stored copy is not the live object
+    assert s.reload() is True and s.grids[0].name == "Mutated in place"
+    app.document_data = lambda default=None: (_ for _ in ()).throw(RuntimeError("boom"))
+    assert s.reload() is True and s.grids == []         # unreadable: treated as empty, no raise
+    assert s.reload() is False
+
+
+def test_projection_cache_follows_field_of_view(store):
+    s, app = store
+    vp = app.viewport
+    vp.camera.fov_deg = 45.0
+    first = s.nodes_px(vp)
+    assert s.nodes_px(vp) is first
+    vp.camera.fov_deg = 30.0
+    assert s.nodes_px(vp) is not first
+    second = s.nodes_px(vp)
+    vp.camera.two_point = True
+    assert s.nodes_px(vp) is not second
+    third = s.nodes_px(vp)
+    vp.camera.up = QVector3D(0, 1, 0)
+    assert s.nodes_px(vp) is not third
 
 
 def test_reload_re_enables_a_failed_overlay(qapp, store):
@@ -289,6 +314,9 @@ def test_reload_re_enables_a_failed_overlay(qapp, store):
     s.paint(app.viewport, painter)
     s.paint(app.viewport, painter)
     assert s._overlay_failed
+    s.reload()
+    assert s._overlay_failed                           # an unchanged block keeps it off
+    app._raw = block(main_grid(name="Fixed"))
     s.reload()
     assert not s._overlay_failed
     s.paint(app.viewport, painter)

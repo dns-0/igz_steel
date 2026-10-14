@@ -28,11 +28,26 @@ def test_names_and_levels_normalised():
 
 def test_line_endpoints_with_extend():
     lines = grid().lines()
-    a, b = by(lines, "x", 1).points
+    pts = by(lines, "x", 1).points
+    a, b = pts[0], pts[-1]
     assert a == pytest.approx((7.62, -3.0, 30.48)) and b == pytest.approx((7.62, 10.096, 30.48))
-    a, b = by(lines, "y", 0).points
+    pts = by(lines, "y", 0).points
+    a, b = pts[0], pts[-1]
     assert a == pytest.approx((-1.0, 0.0, 30.48)) and b == pytest.approx((18.764, 0.0, 30.48))
     assert by(lines, "x", 1).name == "B" and by(lines, "y", 1).name == "2"
+
+
+def test_lines_have_a_vertex_at_every_crossing():
+    g = grid()
+    xl = by(g.lines(), "x", 1)
+    assert len(xl.points) == len(g.y_names) + 2
+    assert xl.points[1:-1] == pytest.approx([(7.62, 0.0, 30.48), (7.62, 6.096, 30.48)])
+    yl = by(g.lines(), "y", 1)
+    assert len(yl.points) == len(g.x_names) + 2
+    assert yl.points[1:-1] == pytest.approx([(0.0, 6.096, 30.48), (7.62, 6.096, 30.48),
+                                             (16.764, 6.096, 30.48)])
+    ys = [p[1] for p in xl.points]
+    assert ys == sorted(ys)                                            # in order along the line
 
 
 def test_bubbles_top_left_and_all():

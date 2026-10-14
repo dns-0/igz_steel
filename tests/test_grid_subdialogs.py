@@ -222,6 +222,45 @@ def test_set_center_clears_stale_errors(radial):
     assert radial.result_grid().origin == pytest.approx((1.0, 2.0, 3.0))
 
 
+def test_radial_renamed_lines_survive_typing(radial):
+    radial.radii_edit.setText("20', 15', 15'")
+    radial.angles_edit.setText("3@30")
+    assert radial._grid.radii_names == ["A", "B", "C"]
+    radial.preview.renamed.emit("radii", 2, "C-OUT")
+    radial.preview.renamed.emit("angles", 3, "4-END")
+    radial.radii_edit.setText("20', 15', ")
+    radial.angles_edit.setText("2@30, ")
+    assert radial._grid.radii_names == ["A", "B"] and radial._grid.angle_names == ["1", "2", "3"]
+    radial.radii_edit.setText("20', 15', 18'")
+    radial.angles_edit.setText("2@30, 40")
+    assert radial._grid.radii_names == ["A", "B", "C-OUT"]
+    assert radial._grid.angle_names == ["1", "2", "3", "4-END"]
+    radial.radii_edit.editingFinished.emit()
+    radial.radii_start.setText("P")                         # a changed start regenerates and commits
+    radial.radii_start.editingFinished.emit()
+    radial.radii_edit.setText("20', 15', 18', 9'")
+    assert radial._grid.radii_names == ["P", "Q", "R", "S"]
+
+
+def test_enter_presses_no_button_in_sub_dialogs(qapp, radial):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QPushButton
+    from igz_steel._grid_dialog import AddLevelsDialog
+    picks = []
+    radial.pick_center_requested.connect(lambda: picks.append(1))
+    radial.show()
+    qapp.processEvents()
+    radial.radii_edit.setFocus()
+    QTest.keyClick(radial.radii_edit, Qt.Key_Return)
+    qapp.processEvents()
+    assert picks == [] and radial.isVisible()
+    d = AddLevelsDialog(None, [Level("L", 0.0)], "imperial")
+    for dlg in (radial, d):
+        assert not any(b.autoDefault() or b.isDefault() for b in dlg.findChildren(QPushButton))
+    d.deleteLater()
+
+
 def test_reopening_radial_dialog_replaces_the_open_one(qapp):
     from igz_steel._grid_dialog import GridDialog
     d = GridDialog(None, units="imperial", persist=False)

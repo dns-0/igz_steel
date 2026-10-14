@@ -57,6 +57,8 @@ class SteelSession:
         self.bom_dialog = None
         self._edit_target = None
         self.grid_dialog_ = None
+        self._applying_grids = False      # our own Apply is writing the document
+        self._dialog_block = None         # the grid block the dialog last loaded
         self.grids = GridStore(app)
         self.grids.confirm = self._confirm_grid_delete
         self.grids.on_edit_request = lambda gid: QTimer.singleShot(0, lambda: self.open_grids(gid))
@@ -69,11 +71,11 @@ class SteelSession:
     def layer_names(self):
         return [ly.name for ly in getattr(self.scene, "layers", []) or []]
 
-    def _guard(self):
+    def _guard(self, message=None):
         if getattr(self.scene, "edit_group", None) is not None:
             QMessageBox.information(self.app.window, "Steel",
-                                    "Close the group you are editing before placing or "
-                                    "changing steel members.")
+                                    message or "Close the group you are editing before placing or "
+                                               "changing steel members.")
             return False
         return True
 
@@ -159,7 +161,8 @@ class SteelSession:
         if self.grid_dialog_ is None:
             from ._grid_dialog import GridDialog
             d = GridDialog(self.app.window)
-            d.load_block(self.grids.raw_block())
+            self._dialog_block = self.grids.raw_block()
+            d.load_block(self._dialog_block)
             d.applied.connect(self.on_grids_applied)
             d.pick_origin_requested.connect(self.pick_origin)
             d.pick_direction_requested.connect(self.pick_direction)
@@ -174,14 +177,21 @@ class SteelSession:
         return d
 
     def on_grids_applied(self, block):
-        if not self._guard():
+        if not self._guard("Close the group you are editing before changing grids."):
             return
+        self._applying_grids = True       # the document-changed hook may run inside save_block
         try:
             self.grids.save_block(block)
         except Exception as exc:
             log.exception("igz_steel: saving grids failed")
             QMessageBox.critical(self.app.window, "Steel grids", f"Could not save the grids: {exc}")
             return
+        finally:
+            self._applying_grids = False
+        if self.grid_dialog_ is not None:
+            # our own write: show the saved block quietly, keeping the preview's view
+            self._dialog_block = self.grids.raw_block()
+            self.grid_dialog_.load_block(self._dialog_block, notice=None, fit=False)
         self.app.viewport.update()
 
     def delete_selected_grid(self):
@@ -191,10 +201,16 @@ class SteelSession:
             self.app.viewport.update()
 
     def _previous_tool(self):
+        """The tool a pick should hand back to. When a pick tool is already
+        active (Pick origin, then Pick dir.), its own ``previous``, so the
+        chain never ends on a pick tool."""
+        from ._grid_dialog import PickDirectionTool, PickPointTool
         vp = self.app.viewport
         for attr in ("active_tool", "tool", "_tool"):
             t = getattr(vp, attr, None)
             if t is not None and not callable(t):
+                if isinstance(t, (PickPointTool, PickDirectionTool)):
+                    return t.previous
                 return t
         return None
 
@@ -312,9 +328,18 @@ class SteelSession:
         self._refresh_bom()
         if self.dialog is not None and self.dialog.isVisible():
             self.dialog.set_layers(self.layer_names())
-        self.grids.reload()
-        if self.grid_dialog_ is not None:
-            self.grid_dialog_.load_block(self.grids.raw_block(), notice="Reloaded from the document")
+        # the host calls this on every scene-version bump (edits, selection
+        # clicks): reload the dialog only when the grid block itself changed,
+        # and not for our own Apply (on_grids_applied refreshes it quietly).
+        # ``stale`` covers a viewport Delete whose save already consumed the
+        # change when the host runs this hook after set_document_data returns.
+        changed = self.grids.reload()
+        if self.grid_dialog_ is not None and not self._applying_grids:
+            block = self.grids.raw_block()
+            stale = block != self._dialog_block
+            if changed or stale:
+                self._dialog_block = block
+                self.grid_dialog_.load_block(block, notice="Reloaded from the document")
         try:
             self.app.viewport.update()
         except Exception:

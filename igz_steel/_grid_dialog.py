@@ -286,6 +286,22 @@ def _line(text="", width=None):
     return e
 
 
+def _no_default_buttons(dialog):
+    """Enter in a field must not press a button: a QDialog otherwise clicks
+    its first auto-default button ("New rect", "Pick") on Return."""
+    for b in dialog.findChildren(QPushButton):
+        b.setAutoDefault(False)
+        b.setDefault(False)
+
+
+_NAMES_ATTR = {"x": "x_names", "y": "y_names", "radii": "radii_names", "angles": "angle_names"}
+
+
+def _line_names(grid, direction):
+    """The grid's name list for ``direction`` (``[]`` when it has none)."""
+    return list(getattr(grid, _NAMES_ATTR.get(direction, ""), None) or [])
+
+
 class GridDialog(QDialog):
     applied = Signal(object)                 # the document block (dict)
     pick_origin_requested = Signal()
@@ -301,6 +317,10 @@ class GridDialog(QDialog):
         self._active = None
         self._loading = False
         self._errors = {}                    # widget -> message
+        # line names as last committed (fill, finished spacing edit, start, swap,
+        # rename): typing through a spacing reconciles from these, so a bay
+        # deleted and retyped keeps its renamed line
+        self._committed_names = {"x": [], "y": []}
         self.confirm = lambda title, text: QMessageBox.question(self, title, text) == QMessageBox.Yes
         self.ask_text = lambda title, label, default: QInputDialog.getText(self, title, label, text=default)
         self._radial_dialog = None
@@ -370,6 +390,7 @@ class GridDialog(QDialog):
         rg.addWidget(QLabel("X spacing"), 0, 0)
         self.x_spacing = _line("")
         self.x_spacing.textChanged.connect(self._on_fields)
+        self.x_spacing.editingFinished.connect(lambda: self._commit_spacing("x"))
         rg.addWidget(self.x_spacing, 0, 1)
         self.x_start = _line("A", 48)
         self.x_start.editingFinished.connect(lambda: self._on_start("x"))
@@ -377,6 +398,7 @@ class GridDialog(QDialog):
         rg.addWidget(QLabel("Y spacing"), 1, 0)
         self.y_spacing = _line("")
         self.y_spacing.textChanged.connect(self._on_fields)
+        self.y_spacing.editingFinished.connect(lambda: self._commit_spacing("y"))
         rg.addWidget(self.y_spacing, 1, 1)
         self.y_start = _line("1", 48)
         self.y_start.editingFinished.connect(lambda: self._on_start("y"))
@@ -482,12 +504,15 @@ class GridDialog(QDialog):
         bottom.addWidget(self.apply_button)
         bottom.addWidget(self.close_button)
         root.addLayout(bottom)
+        _no_default_buttons(self)
 
     # -- document in/out -------------------------------------------------------
     def units(self):
         return self._units
 
-    def load_block(self, raw, notice=None):
+    def load_block(self, raw, notice=None, fit=True):
+        """Show the grids of ``raw``. ``fit=False`` keeps the preview's pan and
+        zoom (the refresh after our own Apply)."""
         grids, meta, _errors = parse_block(raw)
         if grids and meta["units"] in UNITS:
             self._set_units(meta["units"], store=False)
@@ -498,7 +523,7 @@ class GridDialog(QDialog):
         self._grids = grids
         self._active = meta["active_grid"] or grids[0].id
         self._refresh_combo()
-        self._fill_fields(fit=True)
+        self._fill_fields(fit=fit)
         self._set_status(notice or "")
 
     def block(self):
@@ -635,9 +660,24 @@ class GridDialog(QDialog):
                 f"Tangent: {self._fmt(g.tangent)} · bubbles: {g.bubbles}")
         self._fill_levels()
         self._loading = False
+        self._commit_names()
         if fit:
             self.preview.set_grid(g, g.active_level, fit=True)
         self._finish_edit()
+
+    def _commit_names(self, *directions):
+        """Snapshot the current grid's line names (both directions by default)."""
+        g = self.current_grid()
+        for d in directions or ("x", "y"):
+            self._committed_names[d] = _line_names(g, d) if g is not None and g.kind == "rect" else []
+
+    def _commit_spacing(self, direction):
+        """A finished spacing edit commits its names, unless the text is in error."""
+        if self._loading:
+            return
+        widget = self.x_spacing if direction == "x" else self.y_spacing
+        if widget not in self._errors:
+            self._commit_names(direction)
 
     def _fill_levels(self):
         g = self.current_grid()
@@ -688,11 +728,15 @@ class GridDialog(QDialog):
         if abs(self.rotation_spin.value() - round(g.rotation_deg, self.rotation_spin.decimals())) > 1e-9:
             g.rotation_deg = float(self.rotation_spin.value())
         if g.kind == "rect":
+            # reconcile from the committed names, not from the names the
+            # previous keystroke left behind
             xs = self._parse_into(self.x_spacing, lambda s: parse_spacing_list(s, self._units))
             if xs is not None:
+                g.x_names = list(self._committed_names["x"] or g.x_names)
                 g.set_spacings("x", xs, self.x_spacing.text())
             ys = self._parse_into(self.y_spacing, lambda s: parse_spacing_list(s, self._units))
             if ys is not None:
+                g.y_names = list(self._committed_names["y"] or g.y_names)
                 g.set_spacings("y", ys, self.y_spacing.text())
             if self.extend_all.isChecked():
                 v = self._read_length(self.extend_edit, g.extend["x_neg"])
@@ -711,12 +755,18 @@ class GridDialog(QDialog):
             return
         g = self.current_grid()
         widget = self.x_start if direction == "x" else self.y_start
+        if widget.text().strip() == (g.x_start if direction == "x" else g.y_start):
+            if widget in self._errors:       # back to the stored start: drop a stale mark
+                self._mark(widget, None)
+                self._finish_edit()
+            return                           # unchanged: renamed lines stay
         try:
             g.set_start(direction, widget.text())
         except GridError as exc:
             self._mark(widget, str(exc))
         else:
             self._mark(widget, None)
+            self._commit_names(direction)
         self._finish_edit()
 
     def _on_extend_mode(self, same):
@@ -764,7 +814,12 @@ class GridDialog(QDialog):
         except (IndexError, GridError) as exc:
             self._set_status(str(exc) or "That line no longer exists")
             return
+        if direction in self._committed_names:
+            self._commit_names(direction)
         self._finish_edit()
+        text = name.strip()
+        if not self._errors and _line_names(g, direction).count(text) > 1:
+            self._set_status(f'Name "{text}" is used twice')   # allowed (spec 9), but flagged
 
     def _swap(self):
         g = self.current_grid()
@@ -1011,6 +1066,7 @@ class AddLevelsDialog(QDialog):
         buttons.addWidget(self.ok_button)
         buttons.addWidget(self.cancel_button)
         form.addRow(buttons)
+        _no_default_buttons(self)
 
     def result_levels(self):
         spacing = parse_length(self.spacing_edit.text(), self._units)
@@ -1032,6 +1088,7 @@ class RadialDialog(QDialog):
         self._units = units
         self._errors = {}
         self._loading = False
+        self._committed_names = {"radii": [], "angles": []}   # as in GridDialog
         if grid is None:
             radii_text = "20', 2@15'" if units == "imperial" else "6, 2@4.5"
             grid = RadialGrid(id=grid_id, name=name,
@@ -1096,6 +1153,9 @@ class RadialDialog(QDialog):
             w.editingFinished.connect(self._on_fields)
         for w in (self.radii_edit, self.angles_edit):
             w.textChanged.connect(self._on_fields)
+        # after _on_fields (connected above): a finished edit commits its names
+        self.radii_edit.editingFinished.connect(lambda: self._commit_list("radii"))
+        self.angles_edit.editingFinished.connect(lambda: self._commit_list("angles"))
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #c83c3c;")
         self.status_label.setWordWrap(True)
@@ -1113,6 +1173,18 @@ class RadialDialog(QDialog):
         self.preview = GridPreview(self, self._units)
         self.preview.renamed.connect(self._on_renamed)
         root.addWidget(self.preview, 1)
+        _no_default_buttons(self)
+
+    def _commit_names(self, *directions):
+        for d in directions or ("radii", "angles"):
+            self._committed_names[d] = _line_names(self._grid, d)
+
+    def _commit_list(self, direction):
+        if self._loading:
+            return
+        widget = self.radii_edit if direction == "radii" else self.angles_edit
+        if widget not in self._errors:
+            self._commit_names(direction)
 
     def _fmt(self, metres):
         return fmt_length(metres, self._units)
@@ -1137,6 +1209,7 @@ class RadialDialog(QDialog):
         self.ext_arc_edit.setText(self._fmt(g.extend["arc"]))
         self.bubbles_combo.setCurrentIndex(1 if g.bubbles == "all" else 0)
         self._loading = False
+        self._commit_names()
         self.preview.set_grid(g, g.active_level, fit=True)
         self._finish()
 
@@ -1190,14 +1263,17 @@ class RadialDialog(QDialog):
             g.start_deg = float(self.start_angle_spin.value())
         radii = self._parse_into(self.radii_edit, lambda s: parse_spacing_list(s, self._units))
         if radii is not None:
+            g.radii_names = list(self._committed_names["radii"] or g.radii_names)
             g.set_radii(radii, self.radii_edit.text())
         steps = self._parse_into(self.angles_edit, parse_angle_list)
         if steps is not None:
+            g.angle_names = list(self._committed_names["angles"] or g.angle_names)
             g.set_angles(steps, self.angles_edit.text())
         for direction, w in (("radii", self.radii_start), ("angles", self.angles_start)):
             try:
                 if w.text().strip() != (g.radii_start if direction == "radii" else g.angles_start):
                     g.set_start(direction, w.text())
+                    self._commit_names(direction)
                 self._mark(w, None)
             except GridError as exc:
                 self._mark(w, str(exc))
@@ -1224,6 +1300,7 @@ class RadialDialog(QDialog):
             self._grid.rename_line(direction, index, name)
         except (IndexError, GridError):
             return
+        self._commit_names(direction)
         self._finish()
 
     def set_center(self, xyz):

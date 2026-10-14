@@ -4,13 +4,12 @@ and pickable bubbles. Geometry comes from ``_grid``; this module projects,
 paints and talks to ``ExtensionApp``. Nothing here may raise into the host."""
 from __future__ import annotations
 
+import copy
 import logging
 import math
-import time
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QPen, QVector3D
-from PySide6.QtWidgets import QApplication
 
 from ._grid import dump_block, parse_block
 
@@ -20,7 +19,10 @@ COLOR = (0.95, 0.45, 0.16)             # IngeTrazo's accent, as the Levels examp
 BUBBLE_PX = 10.0
 MARK_PX = 6.0
 DEFAULT_SNAP_PX = 12.0
-DOUBLE_CLICK_S = 0.4
+_UNREAD = object()                     # GridStore._last_raw before the first read
+# the host camera's view state; ``zoom`` is a method there and compares equal to itself
+CAMERA_ATTRS = ("yaw", "pitch", "distance", "perspective", "target", "fov_deg", "two_point",
+                "up", "zoom", "ortho_scale")
 
 
 def _qcolor(alpha=1.0):
@@ -60,19 +62,10 @@ def _bubble_points(bubbles):
             + [(b.at[0] + b.toward[0], b.at[1] + b.toward[1], b.at[2]) for b in bubbles])
 
 
-def _double_click_s():
-    try:
-        if QApplication.instance() is not None:
-            return QApplication.doubleClickInterval() / 1000.0
-    except Exception:
-        pass
-    return DOUBLE_CLICK_S
-
-
 def _camera_key(viewport):
     cam = getattr(viewport, "camera", None)
     parts = []
-    for attr in ("yaw", "pitch", "distance", "perspective", "target", "zoom", "ortho_scale"):
+    for attr in CAMERA_ATTRS:
         v = getattr(cam, attr, None)
         if isinstance(v, QVector3D):
             v = (round(v.x(), 6), round(v.y(), 6), round(v.z(), 6))
@@ -88,7 +81,12 @@ def _camera_key(viewport):
 
 
 class GridStore:
-    """The grids of the open document and everything the viewport needs."""
+    """The grids of the open document and everything the viewport needs.
+
+    Editing a grid is reached through the context menu ("Edit grid…"): the
+    host's select tool handles double-clicks itself and sends
+    ``on_select(None)`` before each pick, so two picks never reach us as a
+    double-click. ``on_edit_request`` stays for a future host hook."""
 
     def __init__(self, app):
         self.app = app
@@ -97,22 +95,34 @@ class GridStore:
         self.errors = []
         self.selected_id = None
         self.confirm = None               # callable(grid) -> bool, set by _core
-        self.on_edit_request = None       # callable(grid_id), set by _core
+        self.on_edit_request = None       # callable(grid_id), set by _core; not called yet
         self._version = 0
         self._cache_key = None
         self._cache = []
         self._overlay_failed = False
         self._snap_failed = False
         self._pick_failed = False
-        self._last_pick = (None, 0.0)
+        self._last_raw = _UNREAD
         self.reload()
 
     # -- data -----------------------------------------------------------------
     def reload(self):
+        """Re-read the document's grid block. ``True`` when it differs from the
+        block read last time, and only then re-parse; ``False`` (nothing
+        changes) for the many document-changed calls that leave grids alone."""
         try:
             raw = self.app.document_data({})
         except Exception:
             raw = {}
+        try:
+            if self._last_raw is not _UNREAD and raw == self._last_raw:
+                return False
+        except Exception:
+            pass                                # an uncomparable value: treat as changed
+        try:
+            self._last_raw = copy.deepcopy(raw)  # the host may hand back a live object
+        except Exception:
+            self._last_raw = raw
         self._overlay_failed = False        # a corrected document may draw again
         self.grids, self.meta, self.errors = parse_block(raw)
         for e in self.errors:
@@ -120,6 +130,7 @@ class GridStore:
         if self.selected_id and self.find(self.selected_id) is None:
             self.selected_id = None
         self.invalidate()
+        return True
 
     def raw_block(self):
         return dump_block(self.grids, self.meta["active_grid"], self.meta["units"])
@@ -323,16 +334,6 @@ class GridStore:
         return None
 
     def on_select(self, item):
-        now = time.monotonic()
-        last_id, last_t = self._last_pick
-        fired = False
-        if item is not None and item == last_id and now - last_t < _double_click_s()                 and callable(self.on_edit_request):
-            fired = True
-            try:
-                self.on_edit_request(item)
-            except Exception:
-                log.exception("igz_steel grids: edit request failed")
-        self._last_pick = (None, 0.0) if fired else (item, now)   # a triple click fires once
         self.selected_id = item
         vp = getattr(self.app, "viewport", None)
         g = self.find(item) if item else None

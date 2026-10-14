@@ -96,6 +96,79 @@ def test_apply_writes_block_and_dialog_reloads_on_change(session):
     assert d.grid_combo.currentText() == "Other" and "Reloaded" in d.status_label.text()
 
 
+def test_unrelated_document_change_keeps_dialog_edits(session):
+    import copy
+    s, app = session
+    d = s.open_grids()
+    d.apply_button.click()
+    assert "Reloaded" not in d.status_label.text() and d.status_label.text() == ""
+    d.x_spacing.setText("5@10'")                                        # not applied yet
+    app.set_document_data(copy.deepcopy(app._raw))                     # e.g. a member edit
+    for fn in app.changed:                                             # e.g. a selection click
+        fn()
+    assert d.x_spacing.text() == "5@10'" and d.status_label.text() == ""
+    assert d.current_grid().x_spacings == pytest.approx([10 * 0.3048] * 5)
+
+
+def test_own_apply_refreshes_quietly_and_keeps_the_view(session):
+    s, app = session
+    d = s.open_grids()
+    d.preview._fit_pending = False
+    d.preview._scale = 3.25
+    d.x_spacing.setText("2@25'")
+    d.apply_button.click()
+    assert d.status_label.text() == "" and not d.preview._fit_pending
+    assert d.preview._scale == 3.25 and d.x_spacing.text() == "2@25'"
+    other = RectGrid(id="g9", name="Other", x_spacings=[1.0], y_spacings=[1.0], levels=[Level("L", 0.0)])
+    app.set_document_data(dump_block([other], "g9", "imperial"))
+    assert "Reloaded" in d.status_label.text() and d.preview._fit_pending
+
+
+def test_viewport_delete_reaches_the_dialog_when_the_hook_runs_later(session):
+    s, app = session
+    d = s.open_grids()
+    d.ask_text = lambda title, label, default: ("Rack", True)
+    d.new_rect_button.click()
+    d.apply_button.click()
+    assert d.grid_combo.count() == 2
+    hooks, app.changed = app.changed, []                               # a host that fires the hook later
+    s.grids.confirm = lambda grid: True
+    s.grids.delete(s.grids.grids[-1].id)
+    for fn in hooks:
+        fn()
+    assert d.grid_combo.count() == 1 and "Reloaded" in d.status_label.text()
+    d.x_spacing.setText("5@10'")
+    for fn in hooks:                                                   # nothing new: edits stay
+        fn()
+    assert d.x_spacing.text() == "5@10'"
+
+
+def test_grid_guard_message(session, monkeypatch):
+    from igz_steel import _core
+    s, app = session
+    shown = []
+    monkeypatch.setattr(_core.QMessageBox, "information",
+                        lambda parent, title, text: shown.append(text))
+    app.viewport.scene.edit_group = object()
+    s.on_grids_applied(s.grids.raw_block())
+    assert shown == ["Close the group you are editing before changing grids."]
+    assert app._raw is None
+
+
+def test_chained_picks_restore_the_original_tool(session):
+    s, app = session
+    d = s.open_grids()
+    app.viewport.tool = "select"
+    d.pick_origin_button.click()
+    assert type(app.viewport.tool).__name__ == "PickPointTool"
+    d.pick_dir_button.click()                                          # before finishing the origin pick
+    tool = app.viewport.tool
+    assert type(tool).__name__ == "PickDirectionTool" and tool.previous == "select"
+    tool.on_click(SimpleNamespace(viewport=app.viewport, world=QVector3D(0, 0, 0)))
+    tool.on_click(SimpleNamespace(viewport=app.viewport, world=QVector3D(1, 1, 0)))
+    assert app.viewport.tool == "select"
+
+
 def test_pick_tools_round_trip(session):
     s, app = session
     d = s.open_grids()

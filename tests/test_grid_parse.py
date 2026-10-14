@@ -41,6 +41,27 @@ def test_spacing_list_with_repeats_and_spaces():
     assert parse_spacing_list("25 30 30", "imperial") == pytest.approx([25 * FT_M, 30 * FT_M, 30 * FT_M])
 
 
+@pytest.mark.parametrize("text, feet", [
+    ("25' 6\" 3@30' 25'", [25.5, 30, 30, 30, 25]),
+    ("25' 6\" 30'", [25.5, 30]),
+    ("3@25' 6\" 25'", [25.5, 25.5, 25.5, 25]),
+    ("25'-6\" 10'", [25.5, 10]),
+    ("6 1/2\" 3@1'", [6.5 / 12, 1, 1, 1]),
+    ("25’ 6” 30′", [25.5, 30]),
+    ("25 ft 6 in 10 ft", [25.5, 10])])
+def test_spacing_list_keeps_feet_and_inches_together_without_commas(text, feet):
+    assert parse_spacing_list(text, "imperial") == pytest.approx([f * FT_M for f in feet])
+
+
+def test_spacing_list_names_stray_text():
+    with pytest.raises(GridError, match='"x"'):
+        parse_spacing_list("25' x 30'", "imperial")
+    with pytest.raises(GridError, match="greater than zero"):
+        parse_spacing_list("25' -5'", "imperial")
+    assert parse_spacing_list("7620mm 2@5 m", "metric") == pytest.approx([7.62, 5.0, 5.0])
+    assert parse_angle_list("30 30° 2@45 deg") == [30.0, 30.0, 45.0, 45.0]
+
+
 @pytest.mark.parametrize("text, msg", [
     ("", "at least one"), ("3@", "after @"), ("0@25'", "at least 1"),
     ("25', 0", "greater than zero"), ("-5'", "greater than zero"), ("5000", "typo"),
@@ -67,6 +88,15 @@ def test_angle_lists():
     (-5 * FT_M, "-5'-0\""), (0.0, "0'-0\""), (0.75 * IN_M, "0'-0 3/4\"")])
 def test_fmt_imperial(metres, text):
     assert fmt_length(metres, "imperial") == text
+
+
+def test_fmt_never_shows_negative_zero():
+    assert fmt_length(-0.0001, "imperial") == "0'-0\""
+    assert fmt_length(-0.0, "imperial") == "0'-0\""
+    assert fmt_length(-0.0001, "metric") == "0.000 m"
+    assert fmt_length(-0.0, "metric") == "0.000 m"
+    assert fmt_length(-0.002, "metric") == "-0.002 m"
+    assert fmt_length(-IN_M / 16, "imperial") == "-0'-0 1/16\""
 
 
 def test_fmt_metric_and_round_trip():

@@ -222,3 +222,62 @@ def test_rename_failure_is_reported(dialog):
     dialog._set_status("")
     dialog.preview.renamed.emit("x", 0, "  ")
     assert dialog.status_label.text()
+
+
+def test_duplicate_line_name_warns(dialog):
+    dialog.preview.renamed.emit("x", 1, "A")
+    assert dialog.current_grid().x_names[:2] == ["A", "A"]
+    assert dialog.status_label.text() == 'Name "A" is used twice'
+    assert dialog.apply_button.isEnabled()                   # allowed, only a warning
+    dialog.preview.renamed.emit("x", 1, "B.5")
+    assert dialog.status_label.text() == ""
+
+
+def test_renamed_line_survives_typing_through_a_spacing(dialog):
+    dialog.x_spacing.setText("30', 30', 30', 25'")
+    assert dialog.current_grid().x_names == ["A", "B", "C", "D", "E"]
+    dialog.preview.renamed.emit("x", 4, "E-ROOF")
+    dialog.x_spacing.setText("30', 30', 30', ")              # mid-edit: the last bay is gone
+    assert dialog.current_grid().x_names == ["A", "B", "C", "D"]
+    dialog.x_spacing.setText("30', 30', 30', 28'")
+    assert dialog.current_grid().x_names == ["A", "B", "C", "D", "E-ROOF"]
+    dialog.x_spacing.editingFinished.emit()                  # commits the names as they are
+    dialog.x_spacing.setText("30', 30', 30'")
+    dialog.x_spacing.setText("30', 30', 30', 28'")
+    assert dialog.current_grid().x_names[-1] == "E-ROOF"
+
+
+def test_committed_names_follow_start_and_swap(dialog):
+    dialog.preview.renamed.emit("y", 1, "2A")
+    dialog.y_start.setText("5")
+    dialog.y_start.editingFinished.emit()
+    dialog.y_spacing.setText("3@20'")
+    assert dialog.current_grid().y_names == ["5", "6", "7", "8"]
+    dialog.swap_button.click()
+    dialog.x_spacing.setText("2@25'")
+    assert dialog.current_grid().x_names == ["5", "6", "7"]
+
+
+def test_unchanged_start_keeps_renamed_lines(dialog):
+    dialog.preview.renamed.emit("x", 1, "B.5")
+    dialog.x_start.editingFinished.emit()
+    assert dialog.current_grid().x_names[1] == "B.5"
+    dialog.x_start.setText(" A ")
+    dialog.x_start.editingFinished.emit()
+    assert dialog.current_grid().x_names[1] == "B.5"
+
+
+def test_enter_in_a_field_presses_no_button(dialog, qapp):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QPushButton
+    asked = []
+    dialog.ask_text = lambda *a: (asked.append(a), ("X", True))[1]
+    dialog.show()
+    qapp.processEvents()
+    dialog.x_spacing.setFocus()
+    QTest.keyClick(dialog.x_spacing, Qt.Key_Return)
+    QTest.keyClick(dialog.origin_x, Qt.Key_Enter)
+    qapp.processEvents()
+    assert dialog.grid_combo.count() == 1 and asked == []
+    assert not any(b.autoDefault() or b.isDefault() for b in dialog.findChildren(QPushButton))
