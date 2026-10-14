@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-import math
-
 import pytest
 from PySide6.QtGui import QImage, QVector3D
-from PySide6.QtWidgets import QDialog
 
 from igz_steel._grid import FT_M, GridError, Level, RadialGrid
 
@@ -211,5 +208,34 @@ def test_unit_switch_retexts_radial_radii(qapp):
     before = list(g.radii)
     d.metric_radio.setChecked(True)
     assert g.radii_text == "3.048 m, 4.572 m" and g.radii == pytest.approx(before)
+    d.close()
+    d.deleteLater()
+
+
+def test_set_center_clears_stale_errors(radial):
+    radial.angles_edit.setText("13@30")
+    radial.angles_edit.editingFinished.emit()
+    assert not radial.ok_button.isEnabled()
+    radial.set_center((1.0, 2.0, 3.0))
+    assert radial.ok_button.isEnabled() and radial.status_label.text() == ""
+    assert radial.angles_edit.styleSheet() == ""
+    assert radial.result_grid().origin == pytest.approx((1.0, 2.0, 3.0))
+
+
+def test_reopening_radial_dialog_replaces_the_open_one(qapp):
+    from igz_steel._grid_dialog import GridDialog
+    d = GridDialog(None, units="imperial", persist=False)
+    d.ask_text = lambda title, label, default: ("Tank", True)
+    d.new_radial_button.click()
+    first = d._radial_dialog
+    d._open_radial(None)
+    assert not first.isVisible()
+    qapp.processEvents()
+    second = d._radial_dialog
+    assert second is not None and second is not first and second.isVisible()
+    assert not d.isEnabled() and d.grid_combo.count() == 1
+    second.cancel_button.click()
+    qapp.processEvents()
+    assert d.isEnabled() and d._radial_dialog is None
     d.close()
     d.deleteLater()

@@ -901,10 +901,9 @@ class GridDialog(QDialog):
             self._open_radial(g)
 
     def _open_radial(self, grid):
-        if self._radial_dialog is not None:
-            self._radial_dialog.close()
-            self._radial_dialog.deleteLater()
-            self._radial_dialog = None
+        old, self._radial_dialog = self._radial_dialog, None
+        if old is not None:
+            old.close()                      # rejects; _radial_done schedules its deletion
         if grid is None:
             name, ok = self.ask_text("New radial grid", "Name:", unique_name(self._grids, "Radial"))
             if not ok or not name.strip():
@@ -1120,6 +1119,8 @@ class RadialDialog(QDialog):
 
     def _fill(self):
         g = self._grid
+        for w in list(self._errors):         # refilled text is valid: drop stale marks
+            self._mark(w, None)
         self._loading = True
         self.center_x.setText(self._fmt(g.origin[0]))
         self.center_y.setText(self._fmt(g.origin[1]))
