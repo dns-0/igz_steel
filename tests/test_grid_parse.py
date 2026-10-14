@@ -74,3 +74,8 @@ def test_fmt_metric_and_round_trip():
     for v in (0.3048, 7.62, 12.3456):
         assert parse_length(fmt_length(v, "imperial"), "imperial") == pytest.approx(v, abs=IN_M / 32)
         assert parse_length(fmt_length(v, "metric"), "metric") == pytest.approx(v, abs=0.0005)
+
+
+def test_huge_repeat_count_rejected_before_expansion():
+    with pytest.raises(GridError, match="At most"):
+        parse_spacing_list("999999999@1'", "imperial")

@@ -91,6 +91,8 @@ def _expand_one(item, parse_one, what):
         raise GridError(f'Cannot read "{item}": expected a {what} after @')
     if count < 1:
         raise GridError(f'Cannot read "{item}": the repeat count must be at least 1')
+    if count > MAX_LINES:
+        raise GridError(f"At most {MAX_LINES} lines in one direction")
     return [parse_one(rest)] * count
 
 
