@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-import math
 from types import SimpleNamespace
 
 import pytest
@@ -223,3 +222,93 @@ def test_register_guards_missing_api():
     app = FakeApp(block(main_grid()))
     GridStore(app).register()
     assert "pick" in app.registered
+
+
+def test_snap_logs_once_and_keeps_answering_none():
+    from igz_steel._grid_host import GridStore
+
+    class BadViewport(FakeViewport):
+        @property
+        def snap_threshold_px(self):
+            raise RuntimeError("boom")
+
+    app = FakeApp(block(main_grid()))
+    s = GridStore(app)
+    vp = BadViewport()
+    assert s.snap(vp, None, 100.0, 300.0) is None
+    assert s._snap_failed
+    assert s.snap(vp, None, 100.0, 300.0) is None
+
+
+def test_host_callbacks_never_raise(qapp, store):
+    s, app = store
+    s.on_edit_request = lambda gid: (_ for _ in ()).throw(RuntimeError("boom"))
+    s.on_select("g1")
+    s.on_select("g1")                                  # fires the failing request
+    s.confirm = lambda grid: (_ for _ in ()).throw(RuntimeError("boom"))
+    s.delete("g1")
+    assert app.sets == [] and s.find("g1") is not None
+    s.confirm = None
+    flashed = []
+    app.viewport.flash_status = lambda text, msec: flashed.append(text)
+    app.set_document_data = lambda value: (_ for _ in ()).throw(RuntimeError("boom"))
+    s.delete("g1")
+    assert s.find("g1") is not None and flashed[-1] == "Could not delete the grid"
+
+
+def test_delete_writes_the_block_once(store):
+    s, app = store
+    s.delete("g1")
+    assert len(app.sets) == 1
+
+
+def test_snap_in_plan_view_prefers_the_active_level():
+    from igz_steel._grid_host import GridStore
+    s = GridStore(FakeApp(block(main_grid(active_level=1))))
+    vp = s.app.viewport
+    vp._world_to_pixel = lambda v: (100.0 + v.x() * 10.0, 300.0 - v.y() * 10.0)   # ignores z
+    px, py = vp._world_to_pixel(QVector3D(0, 0, 0))
+    res = s.snap(vp, SimpleNamespace(point=QVector3D()), px, py)
+    assert res.label == "A-1 · EL 112"
+
+
+def test_triple_pick_requests_edit_once(store):
+    s, app = store
+    got = []
+    s.on_edit_request = got.append
+    for _ in range(3):
+        s.on_select("g1")
+    assert got == ["g1"]
+
+
+def test_reload_re_enables_a_failed_overlay(qapp, store):
+    s, app = store
+    s.grids[0].lines = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("bad"))
+    img = QImage(80, 60, QImage.Format_ARGB32)
+    painter = QPainter(img)
+    s.paint(app.viewport, painter)
+    s.paint(app.viewport, painter)
+    assert s._overlay_failed
+    s.reload()
+    assert not s._overlay_failed
+    s.paint(app.viewport, painter)
+    painter.end()
+    assert not s._overlay_failed
+
+
+def test_paint_projects_once_per_grid(qapp, store):
+    s, app = store
+    calls = []
+    app.world_to_pixels = lambda pts: (calls.append(len(pts)) or
+                                       ([100.0 + p[0] * 10.0 for p in pts],
+                                        [300.0 - p[1] * 10.0 - p[2] * 10.0 for p in pts],
+                                        [True] * len(pts)))
+    lines_calls = []
+    g = s.grids[0]
+    orig = g.lines
+    g.lines = lambda *a, **k: (lines_calls.append(1), orig(*a, **k))[1]
+    img = QImage(800, 600, QImage.Format_ARGB32)
+    painter = QPainter(img)
+    s.paint(app.viewport, painter)
+    painter.end()
+    assert len(calls) == 1 and len(lines_calls) == 1

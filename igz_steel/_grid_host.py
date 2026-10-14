@@ -10,6 +10,7 @@ import time
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QPen, QVector3D
+from PySide6.QtWidgets import QApplication
 
 from ._grid import dump_block, parse_block
 
@@ -53,6 +54,21 @@ def project(app, viewport, points):
     return out
 
 
+def _bubble_points(bubbles):
+    """Anchors then anchor + toward, so one projection covers both."""
+    return ([b.at for b in bubbles]
+            + [(b.at[0] + b.toward[0], b.at[1] + b.toward[1], b.at[2]) for b in bubbles])
+
+
+def _double_click_s():
+    try:
+        if QApplication.instance() is not None:
+            return QApplication.doubleClickInterval() / 1000.0
+    except Exception:
+        pass
+    return DOUBLE_CLICK_S
+
+
 def _camera_key(viewport):
     cam = getattr(viewport, "camera", None)
     parts = []
@@ -86,6 +102,8 @@ class GridStore:
         self._cache_key = None
         self._cache = []
         self._overlay_failed = False
+        self._snap_failed = False
+        self._pick_failed = False
         self._last_pick = (None, 0.0)
         self.reload()
 
@@ -95,6 +113,7 @@ class GridStore:
             raw = self.app.document_data({})
         except Exception:
             raw = {}
+        self._overlay_failed = False        # a corrected document may draw again
         self.grids, self.meta, self.errors = parse_block(raw)
         for e in self.errors:
             log.warning("igz_steel grids: %s", e)
@@ -144,13 +163,19 @@ class GridStore:
         self._cache_key = key
         return self._cache
 
-    def bubble_centres(self, viewport, grid):
+    def bubble_centres(self, viewport, grid, lines=None, projected=None):
         """``[(cx, cy, Bubble)]`` for the grid's active level, pushed out from
-        the line end by the bubble radius in screen space."""
-        bubbles = [b for ln in grid.lines() for b in ln.bubbles]
-        at = project(self.app, viewport, [b.at for b in bubbles])
-        out = project(self.app, viewport,
-                      [(b.at[0] + b.toward[0], b.at[1] + b.toward[1], b.at[2]) for b in bubbles])
+        the line end by the bubble radius in screen space. ``_paint`` passes the
+        ``lines`` it already has and ``projected`` (the anchors' and the
+        toward-points' pixels, in bubble order) from its single projection."""
+        if lines is None:
+            lines = grid.lines()
+        bubbles = [b for ln in lines for b in ln.bubbles]
+        if projected is None:
+            both = project(self.app, viewport, _bubble_points(bubbles))
+            at, out = both[:len(bubbles)], both[len(bubbles):]
+        else:
+            at, out = projected
         centres = []
         for b, p, q in zip(bubbles, at, out):
             if p is None:
@@ -188,13 +213,30 @@ class GridStore:
         clip = getattr(viewport, "_clip_pixel_line", None)
         for g in grids:
             lines = g.lines()
-            px = project(self.app, viewport, [p for ln in lines for p in ln.points])
+            bubbles = [b for ln in lines for b in ln.bubbles]
+            line_pts = [p for ln in lines for p in ln.points]
+            marks, labels = [], []
+            for li, level in enumerate(g.levels):
+                if li == g.active_level:
+                    continue
+                labels.append((len(marks), level.name))
+                marks += g.corner_marks(li)
+            # one projection for everything this grid draws, sliced back by offsets
+            n_line, n_bub = len(line_pts), len(bubbles)
+            px = project(self.app, viewport,
+                         line_pts + _bubble_points(bubbles)
+                         + [g.to_world(0.0, 0.0, g.level().z)] + marks)
+            line_px = px[:n_line]
+            at_px = px[n_line:n_line + n_bub]
+            out_px = px[n_line + n_bub:n_line + 2 * n_bub]
+            o = px[n_line + 2 * n_bub]
+            mpx = px[n_line + 2 * n_bub + 1:]
             selected = g.id == self.selected_id
             painter.setPen(QPen(_qcolor(0.9), 2.0 if selected else 1.2,
                                 Qt.SolidLine if selected else Qt.DashLine))
             k = 0
             for ln in lines:
-                seg = px[k:k + len(ln.points)]
+                seg = line_px[k:k + len(ln.points)]
                 k += len(ln.points)
                 for a, b in zip(seg, seg[1:]):
                     if a is None or b is None:
@@ -206,24 +248,15 @@ class GridStore:
                         a, b = c
                     painter.drawLine(QPointF(a[0], a[1]), QPointF(b[0], b[1]))
             painter.setBrush(QBrush(bg))
-            for cx, cy, b in self.bubble_centres(viewport, g):
+            for cx, cy, b in self.bubble_centres(viewport, g, lines, (at_px, out_px)):
                 painter.setPen(QPen(_qcolor(1.0), 1.2))
                 painter.drawEllipse(QPointF(cx, cy), BUBBLE_PX, BUBBLE_PX)
                 painter.drawText(QRectF(cx - BUBBLE_PX, cy - BUBBLE_PX, 2 * BUBBLE_PX, 2 * BUBBLE_PX),
                                  Qt.AlignCenter, b.name)
             painter.setBrush(Qt.NoBrush)
-            o = project(self.app, viewport, [g.to_world(0.0, 0.0, g.level().z)])[0]
             if o is not None:
                 painter.setPen(QPen(_qcolor(1.0)))
                 painter.drawText(QPointF(o[0] + 8, o[1] + 14), f"{g.name} · {g.level().name}")
-            marks, labels = [], []
-            for li, level in enumerate(g.levels):
-                if li == g.active_level:
-                    continue
-                cm = g.corner_marks(li)
-                labels.append((len(marks), level.name))
-                marks += cm
-            mpx = project(self.app, viewport, marks)
             painter.setPen(QPen(_qcolor(0.4), 1.0))
             for p in mpx:
                 if p is None:
@@ -234,6 +267,14 @@ class GridStore:
                 p = mpx[idx] if idx < len(mpx) else None
                 if p is not None:
                     painter.drawText(QPointF(p[0] + 8, p[1] - 4), name)
+
+    def _log_once(self, flag, what):
+        """First failure is logged in full, repeats at debug level (mouse-move rate)."""
+        if getattr(self, flag):
+            log.debug("igz_steel grids: %s", what, exc_info=True)
+        else:
+            setattr(self, flag, True)
+            log.exception("igz_steel grids: %s", what)
 
     # -- snapping -------------------------------------------------------------
     def snap(self, viewport, snap, px, py):
@@ -252,16 +293,20 @@ class GridStore:
             best = None
             for x, y, g, level, node in self.nodes_px(viewport):
                 d = math.hypot(x - px, y - py)
-                if d <= threshold and (best is None or d < best[0]):
-                    best = (d, g, level, node)
+                if d > threshold:
+                    continue
+                active = g.levels[g.active_level] is level
+                # in plan view every level projects to one pixel: prefer the active level
+                if best is None or d < best[0] - 1e-6 or (d <= best[0] + 1e-6 and active and not best[4]):
+                    best = (d, g, level, node, active)
             if best is None:
                 return None
             from core.snap import SnapResult
-            _d, g, level, node = best
+            _d, g, level, node, _active = best
             return SnapResult(QVector3D(*node.at), "reference", COLOR,
                               label=self.tip(g, level, node))
         except Exception:
-            log.exception("igz_steel grids: snap provider error")
+            self._log_once("_snap_failed", "snap provider error")
             return None
 
     # -- pickables ------------------------------------------------------------
@@ -274,29 +319,36 @@ class GridStore:
                     if math.hypot(cx - px, cy - py) <= BUBBLE_PX:
                         return g.id
         except Exception:
-            log.exception("igz_steel grids: pick error")
+            self._log_once("_pick_failed", "pick error")
         return None
 
     def on_select(self, item):
         now = time.monotonic()
         last_id, last_t = self._last_pick
-        if item is not None and item == last_id and now - last_t < DOUBLE_CLICK_S \
-                and callable(self.on_edit_request):
-            self.on_edit_request(item)
-        self._last_pick = (item, now)
+        fired = False
+        if item is not None and item == last_id and now - last_t < _double_click_s()                 and callable(self.on_edit_request):
+            fired = True
+            try:
+                self.on_edit_request(item)
+            except Exception:
+                log.exception("igz_steel grids: edit request failed")
+        self._last_pick = (None, 0.0) if fired else (item, now)   # a triple click fires once
         self.selected_id = item
         vp = getattr(self.app, "viewport", None)
         g = self.find(item) if item else None
         if g is not None:
-            flash = getattr(vp, "flash_status", None)
-            if callable(flash):
-                try:
-                    flash(f"Grid {g.name}: {len(g.levels)} level(s). Delete removes it.", 3000)
-                except Exception:
-                    pass
+            self._flash(f"Grid {g.name}: {len(g.levels)} level(s). Delete removes it.")
         if vp is not None:
             try:
                 vp.update()
+            except Exception:
+                pass
+
+    def _flash(self, text):
+        flash = getattr(getattr(self.app, "viewport", None), "flash_status", None)
+        if callable(flash):
+            try:
+                flash(text, 3000)
             except Exception:
                 pass
 
@@ -304,14 +356,23 @@ class GridStore:
         g = self.find(item)
         if g is None:
             return
-        if callable(self.confirm) and not self.confirm(g):
+        try:
+            if callable(self.confirm) and not self.confirm(g):
+                return
+        except Exception:
+            log.exception("igz_steel grids: delete confirmation failed")
             return
         grids = [x for x in self.grids if x.id != item]
         active = self.meta["active_grid"]
         if active == item:
             active = grids[0].id if grids else None
+        try:
+            self.save_block(dump_block(grids, active, self.meta["units"]))
+        except Exception:
+            log.exception("igz_steel grids: could not delete the grid")
+            self._flash("Could not delete the grid")
+            return
         self.selected_id = None
-        self.save_block(dump_block(grids, active, self.meta["units"]))
 
     def register(self):
         app = self.app
