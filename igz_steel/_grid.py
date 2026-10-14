@@ -486,3 +486,207 @@ class RectGrid(_GridMixin):
                        visible=bool(d.get("visible", True)))
         except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
             raise GridError(f"bad rectangular grid: {exc}") from None
+
+
+def _arc_degrees(start, end, through):
+    """Vertex angles from ``start`` to ``end`` every ``ARC_STEP_DEG``, plus
+    every angle in ``through`` that lies inside, sorted and deduplicated."""
+    span = end - start
+    n = max(1, int(math.ceil(abs(span) / ARC_STEP_DEG)))
+    degs = [start + span * k / n for k in range(n + 1)]
+    degs += [a for a in through if start - 1e-9 <= a <= end + 1e-9]
+    degs.sort()
+    out = []
+    for d in degs:
+        if not out or d - out[-1] > 1e-9:
+            out.append(d)
+    return out
+
+
+@dataclass
+class RadialGrid(_GridMixin):
+    id: str
+    name: str
+    origin: tuple = (0.0, 0.0, 0.0)
+    rotation_deg: float = 0.0
+    radii_text: str = ""
+    radii: list = field(default_factory=list)        # first radius, then the spacing to each next arc
+    radii_names: list = field(default_factory=list)
+    radii_start: str = "A"
+    angles_text: str = ""
+    start_deg: float = 0.0
+    steps_deg: list = field(default_factory=list)
+    angle_names: list = field(default_factory=list)
+    angles_start: str = "1"
+    tangent: float = 0.0
+    extend: dict = field(default_factory=lambda: {"radial_in": 0.0, "radial_out": 0.0, "arc": 0.0})
+    bubbles: str = "top_left"
+    levels: list = field(default_factory=list)
+    active_level: int = 0
+    visible: bool = True
+    kind = "radial"
+
+    def __post_init__(self):
+        self.radii_names = reconcile_names(self.radii_start, len(self.radii), self.radii_names)
+        self.angle_names = reconcile_names(self.angles_start, len(self.steps_deg) + 1, self.angle_names)
+        self._finish_init()
+
+    @property
+    def closed(self):
+        return abs(sum(self.steps_deg) - 360.0) < 1e-6
+
+    def radius_values(self):
+        return cumulative(self.radii)[1:]
+
+    def angle_values(self):
+        return [self.start_deg + a for a in cumulative(self.steps_deg)]
+
+    def _radial_count(self):
+        return len(self.steps_deg) if self.closed else len(self.steps_deg) + 1
+
+    def _polar(self, r, deg, z):
+        a = math.radians(deg)
+        return self.to_world(r * math.cos(a), r * math.sin(a), z)
+
+    def _tangent(self, deg, forward):
+        """World unit vector tangent to a circle at ``deg``, toward increasing
+        angles when ``forward`` else decreasing."""
+        a = math.radians(deg)
+        return self.direction(-math.sin(a), math.cos(a)) if forward else self.direction(math.sin(a), -math.cos(a))
+
+    # -- editing
+    def set_radii(self, spacings, text):
+        spacings = [float(s) for s in spacings]
+        self.radii_names = reconcile_names(self.radii_start, len(spacings), self.radii_names)
+        self.radii, self.radii_text = spacings, str(text)
+
+    def set_angles(self, steps, text):
+        steps = [float(s) for s in steps]
+        self.angle_names = reconcile_names(self.angles_start, len(steps) + 1, self.angle_names)
+        self.steps_deg, self.angles_text = steps, str(text)
+
+    def set_start(self, direction, start):
+        if direction == "radii":
+            self.radii_names = name_sequence(start, len(self.radii))
+            self.radii_start = str(start).strip()
+        else:
+            self.angle_names = name_sequence(start, len(self.steps_deg) + 1)
+            self.angles_start = str(start).strip()
+
+    def rename_line(self, direction, index, new_name):
+        names = self.radii_names if direction == "radii" else self.angle_names
+        text = str(new_name).strip()
+        if text:
+            names[int(index)] = text
+
+    # -- geometry
+    def lines(self, level_index=None):
+        z = self.level(level_index).z
+        rs, angs = self.radius_values(), self.angle_values()
+        e = self.extend
+        r_in = max(rs[0] - e["radial_in"], 0.0)
+        r_out = rs[-1] + e["radial_out"]
+        out = []
+        for k in range(self._radial_count()):
+            deg, name = angs[k], self.angle_names[k]
+            a, b = self._polar(r_in, deg, z), self._polar(r_out, deg, z)
+            rad = math.radians(deg)
+            outward = self.direction(math.cos(rad), math.sin(rad))
+            bubbles = [Bubble(name, b, outward)]
+            if self.bubbles == "all" and r_in > 0.0:
+                bubbles.append(Bubble(name, a, (-outward[0], -outward[1])))
+            out.append(GridLine(name, "angles", k, [a, b], bubbles))
+        for j, (r, name) in enumerate(zip(rs, self.radii_names)):
+            pts, bubbles = self._arc(name, r, angs, z)
+            out.append(GridLine(name, "radii", j, pts, bubbles))
+        return out
+
+    def _arc(self, name, r, angs, z):
+        start, end = angs[0], angs[-1]
+        if self.closed:
+            pts = [self._polar(r, d, z) for d in _arc_degrees(start, start + 360.0, angs)]
+            return pts, [Bubble(name, pts[0], self._tangent(start, False))]
+        e_arc = self.extend["arc"]
+        if self.tangent > 0.0:
+            leg = self.tangent + e_arc
+            p0, p1 = self._polar(r, start, z), self._polar(r, end, z)
+            t0, t1 = self._tangent(start, False), self._tangent(end, True)
+            a = (p0[0] + t0[0] * leg, p0[1] + t0[1] * leg, z)
+            b = (p1[0] + t1[0] * leg, p1[1] + t1[1] * leg, z)
+            pts = [a] + [self._polar(r, d, z) for d in _arc_degrees(start, end, angs)] + [b]
+        else:
+            ext = math.degrees(e_arc / r) if r > 0.0 else 0.0
+            degs = _arc_degrees(start - ext, end + ext, angs)
+            pts = [self._polar(r, d, z) for d in degs]
+            t0, t1 = self._tangent(degs[0], False), self._tangent(degs[-1], True)
+        bubbles = [Bubble(name, pts[0], t0)]
+        if self.bubbles == "all":
+            bubbles.append(Bubble(name, pts[-1], t1))
+        return pts, bubbles
+
+    def intersections(self, level_index=None):
+        z = self.level(level_index).z
+        rs, angs = self.radius_values(), self.angle_values()
+        n = self._radial_count()
+        nodes = [Node((rn, self.angle_names[k]), self._polar(r, angs[k], z))
+                 for r, rn in zip(rs, self.radii_names) for k in range(n)]
+        if self.tangent > 0.0 and not self.closed:
+            for line in self.lines(level_index):
+                if line.direction == "radii":
+                    nodes.append(Node((line.name, "T1"), line.points[0]))
+                    nodes.append(Node((line.name, "T2"), line.points[-1]))
+        return nodes
+
+    def corner_marks(self, level_index=None):
+        z = self.level(level_index).z
+        rs, angs = self.radius_values(), self.angle_values()
+        return [self._polar(rs[0], angs[0], z), self._polar(rs[-1], angs[0], z),
+                self._polar(rs[-1], angs[-1], z), self._polar(rs[0], angs[-1], z),
+                self.to_world(0.0, 0.0, z)]
+
+    # -- block
+    def to_dict(self):
+        return {"id": self.id, "name": self.name, "kind": "radial", "visible": bool(self.visible),
+                "origin": [float(c) for c in self.origin],
+                "rotation_deg": float(self.rotation_deg),
+                "radii": {"text": self.radii_text, "spacings": [float(s) for s in self.radii],
+                          "names": list(self.radii_names), "start": self.radii_start},
+                "angles": {"text": self.angles_text, "start_deg": float(self.start_deg),
+                           "steps_deg": [float(s) for s in self.steps_deg],
+                           "names": list(self.angle_names), "start": self.angles_start},
+                "tangent": float(self.tangent),
+                "extend": {k: float(self.extend.get(k, 0.0))
+                           for k in ("radial_in", "radial_out", "arc")},
+                "bubbles": self.bubbles, "levels": self._levels_dicts(),
+                "active_level": int(self.active_level)}
+
+    @classmethod
+    def from_dict(cls, d):
+        try:
+            rd, an = d["radii"], d["angles"]
+            radii = [_finite(s, "radius spacing") for s in rd["spacings"]]
+            steps = [_finite(s, "angle step") for s in an["steps_deg"]]
+            if not radii or not steps:
+                raise GridError("radii or angles are empty")
+            if any(s <= 0 for s in radii + steps):
+                raise GridError("a radius spacing or angle step is not positive")
+            if sum(steps) > 360.0 + 1e-9:
+                raise GridError("angle steps sweep more than 360°")
+            origin = _xyz(d.get("origin", (0.0, 0.0, 0.0)))
+            return cls(id=str(d["id"]), name=str(d.get("name", d["id"])), origin=origin,
+                       rotation_deg=_finite(d.get("rotation_deg", 0.0), "rotation"),
+                       radii_text=str(rd.get("text", "")), radii=radii,
+                       radii_names=[str(n) for n in rd.get("names", [])],
+                       radii_start=str(rd.get("start", "A")),
+                       angles_text=str(an.get("text", "")),
+                       start_deg=_finite(an.get("start_deg", 0.0), "start angle"),
+                       steps_deg=steps, angle_names=[str(n) for n in an.get("names", [])],
+                       angles_start=str(an.get("start", "1")),
+                       tangent=max(0.0, _finite(d.get("tangent", 0.0), "tangent")),
+                       extend=_extend_from(d.get("extend"), ("radial_in", "radial_out", "arc")),
+                       bubbles=_bubbles_mode(d.get("bubbles")),
+                       levels=_levels_from(d.get("levels"), origin[2]),
+                       active_level=int(d.get("active_level", 0)),
+                       visible=bool(d.get("visible", True)))
+        except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
+            raise GridError(f"bad radial grid: {exc}") from None
