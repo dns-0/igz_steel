@@ -107,7 +107,13 @@ def test_round_trip_json():
     {"origin": [0, 0]},
     {"x": {"spacings": [-1.0], "start": "A", "text": ""}},
     {"levels": "nope"},
-    {"rotation_deg": "fast"}])
+    {"rotation_deg": "fast"},
+    {"extend": [1]},
+    {"extend": "abc"},
+    {"active_level": float("inf")},
+    {"rotation_deg": float("nan")},
+    {"x": {"spacings": [float("nan")], "names": [], "start": "A", "text": ""}},
+    {"levels": [{"name": "a", "z": float("inf")}]}])
 def test_from_dict_rejects_bad_blocks(patch):
     d = grid().to_dict()
     d.update(patch)

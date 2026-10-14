@@ -295,8 +295,15 @@ def sorted_levels(levels):
     return sorted((Level(str(lv.name), float(lv.z)) for lv in levels), key=lambda lv: lv.z)
 
 
+def _finite(value, what):
+    v = float(value)
+    if not math.isfinite(v):
+        raise GridError(f"{what} is not a finite number")
+    return v
+
+
 def _xyz(seq):
-    vals = [float(c) for c in seq]
+    vals = [_finite(c, "origin coordinate") for c in seq]
     if len(vals) != 3:
         raise GridError("origin needs three coordinates")
     return tuple(vals)
@@ -305,13 +312,16 @@ def _xyz(seq):
 def _levels_from(raw, fallback_z):
     if raw is None:
         return [Level("Level 1", float(fallback_z))]
-    levels = [Level(str(lv["name"]), float(lv["z"])) for lv in raw]
+    levels = [Level(str(lv["name"]), _finite(lv["z"], "level elevation")) for lv in raw]
     return levels or [Level("Level 1", float(fallback_z))]
 
 
 def _extend_from(raw, keys):
-    raw = raw or {}
-    return {k: float(raw.get(k, 0.0)) for k in keys}
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise GridError("extend must be an object")
+    return {k: _finite(raw.get(k, 0.0), "extend") for k in keys}
 
 
 def _bubbles_mode(raw):
@@ -456,15 +466,15 @@ class RectGrid(_GridMixin):
     def from_dict(cls, d):
         try:
             x, y = d["x"], d["y"]
-            xs = [float(s) for s in x["spacings"]]
-            ys = [float(s) for s in y["spacings"]]
+            xs = [_finite(s, "spacing") for s in x["spacings"]]
+            ys = [_finite(s, "spacing") for s in y["spacings"]]
             if not xs or not ys:
                 raise GridError("a direction has no spacings")
             if any(s <= 0 for s in xs + ys):
                 raise GridError("a spacing is not positive")
             origin = _xyz(d.get("origin", (0.0, 0.0, 0.0)))
             return cls(id=str(d["id"]), name=str(d.get("name", d["id"])), origin=origin,
-                       rotation_deg=float(d.get("rotation_deg", 0.0)),
+                       rotation_deg=_finite(d.get("rotation_deg", 0.0), "rotation"),
                        x_text=str(x.get("text", "")), x_spacings=xs,
                        x_names=[str(n) for n in x.get("names", [])], x_start=str(x.get("start", "A")),
                        y_text=str(y.get("text", "")), y_spacings=ys,
@@ -474,5 +484,5 @@ class RectGrid(_GridMixin):
                        levels=_levels_from(d.get("levels"), origin[2]),
                        active_level=int(d.get("active_level", 0)),
                        visible=bool(d.get("visible", True)))
-        except (KeyError, TypeError, ValueError) as exc:
+        except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
             raise GridError(f"bad rectangular grid: {exc}") from None
