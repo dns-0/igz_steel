@@ -246,3 +246,233 @@ def reconcile_names(start, count, existing):
         except GridError:
             names.append(str(len(names) + 1))
     return names
+
+
+# ------------------------------------------------------------ geometry
+
+@dataclass
+class Level:
+    name: str
+    z: float
+
+
+@dataclass
+class Bubble:
+    name: str
+    at: tuple              # (x, y, z) world
+    toward: tuple          # unit (dx, dy) pointing away from the line end
+
+
+@dataclass
+class GridLine:
+    name: str
+    direction: str         # "x" | "y" | "radii" | "angles"
+    index: int
+    points: list           # [(x, y, z), ...] world, a polyline
+    bubbles: list          # [Bubble]
+
+
+@dataclass
+class Node:
+    names: tuple           # (first name, second name), e.g. ("B", "3")
+    at: tuple              # (x, y, z) world
+
+
+def cumulative(spacings):
+    out = [0.0]
+    for s in spacings:
+        out.append(out[-1] + float(s))
+    return out
+
+
+def rotate_xy(x, y, deg):
+    a = math.radians(deg)
+    c, s = math.cos(a), math.sin(a)
+    return (x * c - y * s, x * s + y * c)
+
+
+def sorted_levels(levels):
+    return sorted((Level(str(lv.name), float(lv.z)) for lv in levels), key=lambda lv: lv.z)
+
+
+def _xyz(seq):
+    vals = [float(c) for c in seq]
+    if len(vals) != 3:
+        raise GridError("origin needs three coordinates")
+    return tuple(vals)
+
+
+def _levels_from(raw, fallback_z):
+    if raw is None:
+        return [Level("Level 1", float(fallback_z))]
+    levels = [Level(str(lv["name"]), float(lv["z"])) for lv in raw]
+    return levels or [Level("Level 1", float(fallback_z))]
+
+
+def _extend_from(raw, keys):
+    raw = raw or {}
+    return {k: float(raw.get(k, 0.0)) for k in keys}
+
+
+def _bubbles_mode(raw):
+    return raw if raw in ("top_left", "all") else "top_left"
+
+
+class _GridMixin:
+    """Behaviour shared by both grid kinds; fields live in the dataclasses."""
+
+    def _finish_init(self):
+        self.levels = sorted_levels(self.levels) or [Level("Level 1", float(self.origin[2]))]
+        self.active_level = min(max(0, int(self.active_level)), len(self.levels) - 1)
+        self.origin = tuple(float(c) for c in self.origin)
+
+    def level(self, index=None):
+        return self.levels[self.active_level if index is None else int(index)]
+
+    def to_world(self, u, v, z):
+        x, y = rotate_xy(u, v, self.rotation_deg)
+        return (self.origin[0] + x, self.origin[1] + y, float(z))
+
+    def direction(self, du, dv):
+        return rotate_xy(du, dv, self.rotation_deg)
+
+    def set_levels(self, levels):
+        self.levels = sorted_levels(levels) or [Level("Level 1", float(self.origin[2]))]
+        self.active_level = min(max(0, int(self.active_level)), len(self.levels) - 1)
+
+    def nearest(self, point, level_index=None):
+        best = None
+        indices = range(len(self.levels)) if level_index is None else [int(level_index)]
+        for li in indices:
+            for node in self.intersections(li):
+                d = math.dist(node.at, point)
+                if best is None or d < best[2]:
+                    best = (node, self.levels[li], d)
+        return best
+
+    def _levels_dicts(self):
+        return [{"name": lv.name, "z": float(lv.z)} for lv in self.levels]
+
+
+@dataclass
+class RectGrid(_GridMixin):
+    id: str
+    name: str
+    origin: tuple = (0.0, 0.0, 0.0)
+    rotation_deg: float = 0.0
+    x_text: str = ""
+    x_spacings: list = field(default_factory=list)
+    x_names: list = field(default_factory=list)
+    x_start: str = "A"
+    y_text: str = ""
+    y_spacings: list = field(default_factory=list)
+    y_names: list = field(default_factory=list)
+    y_start: str = "1"
+    extend: dict = field(default_factory=lambda: {"x_neg": 0.0, "x_pos": 0.0,
+                                                  "y_neg": 0.0, "y_pos": 0.0})
+    bubbles: str = "top_left"
+    levels: list = field(default_factory=list)
+    active_level: int = 0
+    visible: bool = True
+    kind = "rect"
+
+    def __post_init__(self):
+        self.x_names = reconcile_names(self.x_start, len(self.x_spacings) + 1, self.x_names)
+        self.y_names = reconcile_names(self.y_start, len(self.y_spacings) + 1, self.y_names)
+        self._finish_init()
+
+    # -- editing
+    def set_spacings(self, direction, spacings, text):
+        spacings = [float(s) for s in spacings]
+        if direction == "x":
+            self.x_names = reconcile_names(self.x_start, len(spacings) + 1, self.x_names)
+            self.x_spacings, self.x_text = spacings, str(text)
+        else:
+            self.y_names = reconcile_names(self.y_start, len(spacings) + 1, self.y_names)
+            self.y_spacings, self.y_text = spacings, str(text)
+
+    def set_start(self, direction, start):
+        if direction == "x":
+            self.x_names = name_sequence(start, len(self.x_spacings) + 1)
+            self.x_start = str(start).strip()
+        else:
+            self.y_names = name_sequence(start, len(self.y_spacings) + 1)
+            self.y_start = str(start).strip()
+
+    def rename_line(self, direction, index, new_name):
+        names = self.x_names if direction == "x" else self.y_names
+        text = str(new_name).strip()
+        if text:
+            names[int(index)] = text
+
+    # -- geometry
+    def lines(self, level_index=None):
+        z = self.level(level_index).z
+        xs, ys = cumulative(self.x_spacings), cumulative(self.y_spacings)
+        e = self.extend
+        out = []
+        for i, (u, name) in enumerate(zip(xs, self.x_names)):
+            a = self.to_world(u, -e["y_neg"], z)
+            b = self.to_world(u, ys[-1] + e["y_pos"], z)
+            bubbles = [Bubble(name, b, self.direction(0.0, 1.0))]
+            if self.bubbles == "all":
+                bubbles.append(Bubble(name, a, self.direction(0.0, -1.0)))
+            out.append(GridLine(name, "x", i, [a, b], bubbles))
+        for j, (v, name) in enumerate(zip(ys, self.y_names)):
+            a = self.to_world(-e["x_neg"], v, z)
+            b = self.to_world(xs[-1] + e["x_pos"], v, z)
+            bubbles = [Bubble(name, a, self.direction(-1.0, 0.0))]
+            if self.bubbles == "all":
+                bubbles.append(Bubble(name, b, self.direction(1.0, 0.0)))
+            out.append(GridLine(name, "y", j, [a, b], bubbles))
+        return out
+
+    def intersections(self, level_index=None):
+        z = self.level(level_index).z
+        xs, ys = cumulative(self.x_spacings), cumulative(self.y_spacings)
+        return [Node((xn, yn), self.to_world(u, v, z))
+                for u, xn in zip(xs, self.x_names) for v, yn in zip(ys, self.y_names)]
+
+    def corner_marks(self, level_index=None):
+        z = self.level(level_index).z
+        X, Y = cumulative(self.x_spacings)[-1], cumulative(self.y_spacings)[-1]
+        return [self.to_world(u, v, z) for u, v in ((0.0, 0.0), (X, 0.0), (X, Y), (0.0, Y))]
+
+    # -- block
+    def to_dict(self):
+        return {"id": self.id, "name": self.name, "kind": "rect", "visible": bool(self.visible),
+                "origin": [float(c) for c in self.origin],
+                "rotation_deg": float(self.rotation_deg),
+                "x": {"text": self.x_text, "spacings": [float(s) for s in self.x_spacings],
+                      "names": list(self.x_names), "start": self.x_start},
+                "y": {"text": self.y_text, "spacings": [float(s) for s in self.y_spacings],
+                      "names": list(self.y_names), "start": self.y_start},
+                "extend": {k: float(self.extend.get(k, 0.0))
+                           for k in ("x_neg", "x_pos", "y_neg", "y_pos")},
+                "bubbles": self.bubbles, "levels": self._levels_dicts(),
+                "active_level": int(self.active_level)}
+
+    @classmethod
+    def from_dict(cls, d):
+        try:
+            x, y = d["x"], d["y"]
+            xs = [float(s) for s in x["spacings"]]
+            ys = [float(s) for s in y["spacings"]]
+            if not xs or not ys:
+                raise GridError("a direction has no spacings")
+            if any(s <= 0 for s in xs + ys):
+                raise GridError("a spacing is not positive")
+            origin = _xyz(d.get("origin", (0.0, 0.0, 0.0)))
+            return cls(id=str(d["id"]), name=str(d.get("name", d["id"])), origin=origin,
+                       rotation_deg=float(d.get("rotation_deg", 0.0)),
+                       x_text=str(x.get("text", "")), x_spacings=xs,
+                       x_names=[str(n) for n in x.get("names", [])], x_start=str(x.get("start", "A")),
+                       y_text=str(y.get("text", "")), y_spacings=ys,
+                       y_names=[str(n) for n in y.get("names", [])], y_start=str(y.get("start", "1")),
+                       extend=_extend_from(d.get("extend"), ("x_neg", "x_pos", "y_neg", "y_pos")),
+                       bubbles=_bubbles_mode(d.get("bubbles")),
+                       levels=_levels_from(d.get("levels"), origin[2]),
+                       active_level=int(d.get("active_level", 0)),
+                       visible=bool(d.get("visible", True)))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise GridError(f"bad rectangular grid: {exc}") from None
