@@ -6,7 +6,7 @@ MT, ST, 2L, HSS and PIPE — 2,299 shapes), stretches them along any axis, edits
 them in place, tags them for BIM, assigns layers and produces a Bill of
 Materials.
 
-- **Version:** 1.0.0 — **License:** GPL-3.0-or-later (see LICENSE, THIRD-PARTY.md)
+- **Version:** 1.1.0 — **License:** GPL-3.0-or-later (see LICENSE, THIRD-PARTY.md)
 - **Tested with:** IngeTrazo 0.5.8 (Extension API 2, bundled Python 3.12 and
   PySide6 6.x). The API is still 0.x; a newer IngeTrazo may need an update of
   this extension.
@@ -46,6 +46,38 @@ folder there (or unzip `igz_steel.zip` so that the folder is
 Members are tagged **IfcColumn** (vertical), **IfcBeam** (horizontal) or
 **IfcMember** (sloped). The Browser shows them as "Steel member" with shape,
 length and weight.
+
+## Grids
+
+**Steel grids…** (toolbar, Extensions ▸ Steel ▸ Grids…, or the right-click
+menu) opens the Grid Creator. A document can hold several named grids;
+each is drawn over the viewport with dashed lines and lettered or numbered
+bubbles, and the cursor snaps to every intersection on every level with
+the grid point on the tip (`B-3 · EL 112'-0"`). Grids are reference
+geometry only: they are saved in the document, never appear in the
+Browser or the Bill of Materials, and each change is one undo step.
+
+Spacings are lists with repeats; the dialog works in feet-inches by
+default and in metres with the Metric switch:
+
+| You type | Meaning |
+|---|---|
+| `25', 3@30', 25'` | five bays: 25 ft, three of 30 ft, 25 ft |
+| `25'-6"`, `25' 6"`, `306"`, `6 1/2"` | feet-inches, inches, fractions |
+| `25` | 25 ft (imperial) or 25 m (metric) |
+| `7.62`, `7620mm`, `762cm` | metres, millimetres, centimetres |
+| `6@30`, `30, 30, 45` | angle steps in degrees (radial grids) |
+
+Lines spaced along X are lettered (A, B, C … skipping I and O, then AA,
+BB …) and lines along Y are numbered; Swap exchanges the two, and
+double-clicking a bubble in the preview renames one line (`B.5`). Extend
+sets how far lines run past the outer grids. Levels copy the grid to
+other elevations: add them one by one or with Add levels… (count, spacing,
+up or down, name pattern). Only the active level is drawn in full; the
+others show corner ticks, and all of them snap. Radial grids take a
+center, radii, angle steps, a tangent length (straight legs continuing
+each arc past the end radial lines, snappable as `A-T1` / `A-T2`) and
+extents. Clicking a bubble with Select selects the grid; Delete removes it.
 
 ## Notes and limits
 

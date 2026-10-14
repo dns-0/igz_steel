@@ -14,6 +14,7 @@ from . import KEY
 from ._bom import collect
 from ._db import load as load_db
 from ._geometry import MIN_LENGTH
+from ._grid_host import GridStore
 from ._host import (insert_command, is_steel_group, iter_groups, make_group, member_frame,
                     member_params, member_parts, member_record, new_params, rebuild_command, run)
 from ._tools import PlaceMemberTool, StretchMemberTool
@@ -55,6 +56,10 @@ class SteelSession:
         self.dialog = None
         self.bom_dialog = None
         self._edit_target = None
+        self.grid_dialog_ = None
+        self.grids = GridStore(app)
+        self.grids.confirm = self._confirm_grid_delete
+        self.grids.on_edit_request = lambda gid: QTimer.singleShot(0, lambda: self.open_grids(gid))
 
     # -- helpers ------------------------------------------------------------
     @property
@@ -143,6 +148,73 @@ class SteelSession:
                                         fmt_len, fmt_weight)
         self.bom_dialog.refresh()
         self._show(self.bom_dialog)
+
+    # -- grids ----------------------------------------------------------------
+    def _confirm_grid_delete(self, grid):
+        return QMessageBox.question(
+            self.app.window, "Steel grids",
+            f"Delete grid {grid.name} with {len(grid.levels)} level(s)?") == QMessageBox.Yes
+
+    def grid_dialog(self):
+        if self.grid_dialog_ is None:
+            from ._grid_dialog import GridDialog
+            d = GridDialog(self.app.window)
+            d.load_block(self.grids.raw_block())
+            d.applied.connect(self.on_grids_applied)
+            d.pick_origin_requested.connect(self.pick_origin)
+            d.pick_direction_requested.connect(self.pick_direction)
+            self.grid_dialog_ = d
+        return self.grid_dialog_
+
+    def open_grids(self, grid_id=None):
+        d = self.grid_dialog()
+        if grid_id:
+            d.select_grid(grid_id)
+        self._show(d)
+        return d
+
+    def on_grids_applied(self, block):
+        if not self._guard():
+            return
+        try:
+            self.grids.save_block(block)
+        except Exception as exc:
+            log.exception("igz_steel: saving grids failed")
+            QMessageBox.critical(self.app.window, "Steel grids", f"Could not save the grids: {exc}")
+            return
+        self.app.viewport.update()
+
+    def delete_selected_grid(self):
+        gid = self.grids.selected_id
+        if gid:
+            self.grids.delete(gid)
+            self.app.viewport.update()
+
+    def _previous_tool(self):
+        vp = self.app.viewport
+        for attr in ("active_tool", "tool", "_tool"):
+            t = getattr(vp, attr, None)
+            if t is not None and not callable(t):
+                return t
+        return None
+
+    def pick_origin(self):
+        from ._grid_dialog import PickPointTool
+        d = self.grid_dialog()
+
+        def on_point(p):
+            d.set_origin(p)
+            self.app.viewport.update()
+        self.app.viewport.set_active_tool(PickPointTool(on_point, previous=self._previous_tool()))
+
+    def pick_direction(self):
+        from ._grid_dialog import PickDirectionTool
+        d = self.grid_dialog()
+
+        def on_angle(deg):
+            d.set_rotation(deg)
+            self.app.viewport.update()
+        self.app.viewport.set_active_tool(PickDirectionTool(on_angle, previous=self._previous_tool()))
 
     # -- actions ------------------------------------------------------------
     def on_place(self, p):
@@ -240,9 +312,24 @@ class SteelSession:
         self._refresh_bom()
         if self.dialog is not None and self.dialog.isVisible():
             self.dialog.set_layers(self.layer_names())
+        self.grids.reload()
+        if self.grid_dialog_ is not None:
+            self.grid_dialog_.load_block(self.grids.raw_block(), notice="Reloaded from the document")
+        try:
+            self.app.viewport.update()
+        except Exception:
+            pass
 
     # -- host hooks ---------------------------------------------------------
     def context_menu(self, menu, selection):
+        menu.addSeparator()
+        grids = menu.addAction("Steel grids…")
+        grids.triggered.connect(_deferred(self.open_grids))
+        if self.grids.selected_id:
+            edit = menu.addAction("Edit grid…")
+            edit.triggered.connect(_deferred(lambda: self.open_grids(self.grids.selected_id)))
+            delete = menu.addAction("Delete grid")
+            delete.triggered.connect(_deferred(self.delete_selected_grid))
         steel = []
         for item in selection:
             g = getattr(item, "owner", None) or item
@@ -250,7 +337,6 @@ class SteelSession:
                 steel.append(g)
         if len(steel) != 1:
             return
-        menu.addSeparator()
         edit = menu.addAction("Edit steel member…")
         edit.triggered.connect(_deferred(self.open_edit))
         stretch = menu.addAction("Stretch steel member")
@@ -299,7 +385,8 @@ def _install_toolbar(app, session):
     entries = [("tb_place", "Place steel member…", session.open_place),
                ("tb_stretch", "Stretch steel member", session.open_stretch),
                ("tb_edit", "Edit steel member…", session.open_edit),
-               ("tb_bom", "Steel Bill of Materials…", session.open_bom)]
+               ("tb_bom", "Steel Bill of Materials…", session.open_bom),
+               ("tb_grid", "Steel grids…", session.open_grids)]
     refs = []
     for icon, text, fn in entries:
         act = QAction(load_icon(icon, win), text, win)
@@ -316,6 +403,7 @@ def setup(app):
     db = load_db()                         # a broken JSON surfaces as a load error
     session = SteelSession(app, db)
     _SESSIONS[id(app)] = session
+    session.grids.register()
     try:
         toolbar = _install_toolbar(app, session)
     except Exception:
@@ -326,7 +414,8 @@ def setup(app):
         for text, fn in (("Place member…", session.open_place),
                          ("Stretch member", session.open_stretch),
                          ("Edit member…", session.open_edit),
-                         ("Bill of Materials…", session.open_bom)):
+                         ("Bill of Materials…", session.open_bom),
+                         ("Grids…", session.open_grids)):
             menu.addAction(text, _deferred(fn))
         if toolbar is not None:
             menu.addSeparator()

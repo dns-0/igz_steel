@@ -150,10 +150,10 @@ def test_context_menu_outliner_and_bom(app):
     menu = QMenu()
     s.context_menu(menu, [g])
     assert [a.text() for a in menu.actions() if not a.isSeparator()] == \
-        ["Edit steel member…", "Stretch steel member"]
+        ["Steel grids…", "Edit steel member…", "Stretch steel member"]
     empty = QMenu()
     s.context_menu(empty, [])
-    assert empty.actions() == []
+    assert [a.text() for a in empty.actions() if not a.isSeparator()] == ["Steel grids…"]
     kind = s.outliner_kind(g)
     assert kind["type"] == "Steel member" and ("Shape", "W12X26") in kind["props"]
     from core.group import Group
