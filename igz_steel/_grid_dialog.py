@@ -35,6 +35,18 @@ def _settings_units():
         return "imperial"
 
 
+def retext_spacings(text, spacings, units):
+    """The spacing text to show after a unit switch: ``text`` itself when it
+    still means the same lengths in ``units``, else the lengths spelled out."""
+    try:
+        parsed = parse_spacing_list(text, units)
+        if len(parsed) == len(spacings) and all(abs(a - b) < 1e-9 for a, b in zip(parsed, spacings)):
+            return text
+    except GridError:
+        pass
+    return ", ".join(fmt_length(s, units) for s in spacings)
+
+
 # ---------------------------------------------------------------- preview
 
 class GridPreview(QWidget):
@@ -341,7 +353,7 @@ class GridDialog(QDialog):
         og.addWidget(QLabel("Rotation °"), 1, 2)
         self.rotation_spin = QDoubleSpinBox()
         self.rotation_spin.setRange(-360.0, 360.0)
-        self.rotation_spin.setDecimals(1)
+        self.rotation_spin.setDecimals(3)
         self.rotation_spin.valueChanged.connect(self._on_fields)
         og.addWidget(self.rotation_spin, 1, 3)
         self.pick_dir_button = QPushButton("Pick dir.")
@@ -482,7 +494,6 @@ class GridDialog(QDialog):
             meta["active_grid"] = gid
         self._grids = grids
         self._active = meta["active_grid"] or grids[0].id
-        self._errors = {}
         self._refresh_combo()
         self._fill_fields(fit=True)
         self._set_status(notice or "")
@@ -513,7 +524,12 @@ class GridDialog(QDialog):
         self.activateWindow()
 
     def set_rotation(self, deg):
-        self.rotation_spin.setValue(float(deg))
+        g = self.current_grid()
+        g.rotation_deg = float(deg)
+        self._loading = True
+        self.rotation_spin.setValue(g.rotation_deg)
+        self._loading = False
+        self._finish_edit()
         self.show()
         self.raise_()
         self.activateWindow()
@@ -640,6 +656,14 @@ class GridDialog(QDialog):
         self._mark(widget, None)
         return value
 
+    def _read_length(self, widget, current):
+        """A length field's value; text that still shows ``current`` (to display
+        precision) leaves the stored, unrounded value alone."""
+        if widget.text() == self._fmt(current):
+            self._mark(widget, None)
+            return current
+        return self._parse_into(widget, lambda s: parse_length(s, self._units))
+
     def _on_fields(self, *_args):
         if self._loading:
             return
@@ -647,14 +671,16 @@ class GridDialog(QDialog):
         if g is None:
             return
         length = lambda s: parse_length(s, self._units)
-        ox, oy, oz = (self._parse_into(w, length) for w in (self.origin_x, self.origin_y, self.origin_z))
+        ox, oy, oz = (self._read_length(w, cur) for w, cur in
+                      zip((self.origin_x, self.origin_y, self.origin_z), g.origin))
         if None not in (ox, oy, oz):
             old_z = g.origin[2]
             g.origin = (ox, oy, oz)
             self._follow_origin_z(g, old_z)
             if len(g.levels) == 1:
                 self._fill_levels()
-        g.rotation_deg = float(self.rotation_spin.value())
+        if abs(self.rotation_spin.value() - round(g.rotation_deg, self.rotation_spin.decimals())) > 1e-9:
+            g.rotation_deg = float(self.rotation_spin.value())
         if g.kind == "rect":
             xs = self._parse_into(self.x_spacing, lambda s: parse_spacing_list(s, self._units))
             if xs is not None:
@@ -663,12 +689,12 @@ class GridDialog(QDialog):
             if ys is not None:
                 g.set_spacings("y", ys, self.y_spacing.text())
             if self.extend_all.isChecked():
-                v = self._parse_into(self.extend_edit, length)
+                v = self._read_length(self.extend_edit, g.extend["x_neg"])
                 if v is not None:
                     g.extend = {k: max(0.0, v) for k in ("x_neg", "x_pos", "y_neg", "y_pos")}
             else:
                 for k, e in self.extend_edits.items():
-                    v = self._parse_into(e, length)
+                    v = self._read_length(e, g.extend[k])
                     if v is not None:
                         g.extend[k] = max(0.0, v)
             g.bubbles = "all" if self.bubbles_combo.currentIndex() == 1 else "top_left"
@@ -688,6 +714,19 @@ class GridDialog(QDialog):
         self._finish_edit()
 
     def _on_extend_mode(self, same):
+        g = self.current_grid()
+        was = self._loading
+        self._loading = True
+        if g is not None and g.kind == "rect":
+            hidden = list(self.extend_edits.values()) if same else [self.extend_edit]
+            for w in hidden:
+                self._mark(w, None)
+            if same:
+                self.extend_edit.setText(self._fmt(g.extend["x_neg"]))
+            else:
+                for k, e in self.extend_edits.items():
+                    e.setText(self._fmt(g.extend[k]))
+        self._loading = was
         self.extend_row.setVisible(not same)
         self._on_fields()
 
@@ -701,13 +740,21 @@ class GridDialog(QDialog):
         if self._loading:
             return
         self._set_units("imperial" if self.imperial_radio.isChecked() else "metric")
+        for g in self._grids:
+            if g.kind == "rect":
+                g.x_text = retext_spacings(g.x_text, g.x_spacings, self._units)
+                g.y_text = retext_spacings(g.y_text, g.y_spacings, self._units)
         self._fill_fields()
 
     def _on_renamed(self, direction, index, name):
         g = self.current_grid()
+        if not name.strip():
+            self._set_status("Enter a name for the line")
+            return
         try:
             g.rename_line(direction, index, name)
-        except (IndexError, GridError):
+        except (IndexError, GridError) as exc:
+            self._set_status(str(exc) or "That line no longer exists")
             return
         self._finish_edit()
 

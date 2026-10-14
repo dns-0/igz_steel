@@ -161,3 +161,64 @@ def test_document_change_reloads_and_notes_it(dialog):
     dialog.x_spacing.setText("9@10'")
     dialog.load_block(main_block(), notice="Reloaded from the document")
     assert dialog.x_spacing.text() == "25', 30'" and "Reloaded" in dialog.status_label.text()
+
+
+def test_extend_mode_toggle_keeps_stored_extents(dialog):
+    dialog.extend_edit.setText("5'")
+    dialog.extend_edit.editingFinished.emit()
+    dialog.extend_all.setChecked(False)
+    g = dialog.current_grid()
+    assert all(v == pytest.approx(5 * FT_M) for v in g.extend.values())
+    assert all(e.text() == "5'-0\"" for e in dialog.extend_edits.values())
+    dialog.extend_edits["x_neg"].setText("2'")
+    dialog.extend_edits["x_neg"].editingFinished.emit()
+    assert g.extend["x_neg"] == pytest.approx(2 * FT_M) and g.extend["x_pos"] == pytest.approx(5 * FT_M)
+    dialog.extend_all.setChecked(True)
+    assert dialog.extend_edit.text() == "2'-0\""
+    assert all(v == pytest.approx(2 * FT_M) for v in dialog.current_grid().extend.values())
+
+
+def test_reload_clears_error_marks(dialog):
+    dialog.x_spacing.setText("3@")
+    assert dialog.x_spacing.styleSheet() != "" and not dialog.apply_button.isEnabled()
+    dialog.load_block(main_block())
+    assert dialog.x_spacing.styleSheet() == "" and dialog.x_spacing.toolTip() == ""
+    assert dialog.apply_button.isEnabled()
+
+
+def test_unrelated_edit_keeps_origin_and_rotation_exact(dialog):
+    dialog.set_origin((1.0, 2.0, 3.0))
+    dialog.set_rotation(12.345)
+    dialog.x_spacing.setText("4@10'")
+    g = dialog.current_grid()
+    assert g.origin == (1.0, 2.0, 3.0)
+    assert g.rotation_deg == pytest.approx(12.345)
+
+
+def test_unit_switch_keeps_spacings_meaning(dialog):
+    dialog.x_spacing.setText("25, 30")
+    g = dialog.current_grid()
+    before = list(g.x_spacings)
+    dialog.metric_radio.setChecked(True)
+    assert dialog.x_spacing.text() == "7.620 m, 9.144 m"
+    assert g.x_spacings == pytest.approx(before)
+    dialog.x_spacing.setText("3@30'")
+    dialog.imperial_radio.setChecked(True)
+    dialog.metric_radio.setChecked(True)
+    assert dialog.x_spacing.text() == "3@30'"
+    assert g.x_spacings == pytest.approx([30 * FT_M] * 3)
+
+
+def test_retext_spacings_helper():
+    from igz_steel._grid_dialog import retext_spacings
+    assert retext_spacings("3@30'", [30 * FT_M] * 3, "metric") == "3@30'"
+    assert retext_spacings("25, 30", [25 * FT_M, 30 * FT_M], "metric") == "7.620 m, 9.144 m"
+    assert retext_spacings("3@", [1.0], "imperial") == "3'-3 3/8\""
+
+
+def test_rename_failure_is_reported(dialog):
+    dialog.preview.renamed.emit("x", 99, "Z")
+    assert dialog.status_label.text()
+    dialog._set_status("")
+    dialog.preview.renamed.emit("x", 0, "  ")
+    assert dialog.status_label.text()
